@@ -1,0 +1,12 @@
+{
+  "done": true,
+  "next_url": null,
+  "params": {
+    "time_series_id": "008100e5d3c8419a91870f275eda9f8d,00d3a6a61373408a887144fe91ff6397,0111fa1965934e46aa0547520343dba7",
+    "datetime": "2015-03-06T00:00:00Z/2015-04-09T23:59:59Z",
+    "limit": 20000,
+    "f": "json",
+    "skipGeometry": "true"
+  },
+  "page": 1
+}
