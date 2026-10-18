@@ -24,11 +24,9 @@ usgs_streamflow/
 ├── README.md
 ├── requirements.txt
 ├── data/
-│   ├── desktop.ini
 │   ├── intermediate/
 │   ├── raw/
 │   └── usgs/
-│       ├── desktop.ini
 │       ├── processed/
 │       │   ├── catalog_stations.csv
 │       │   ├── continuous_series_catalog.csv
@@ -42,7 +40,6 @@ usgs_streamflow/
 │           └── continuous/
 ├── notebooks/
 │   ├── análise_seleção.ipynb
-│   ├── desktop.ini
 │   └── usgs_streamflow.ipynb
 ├── reports/
 │   └── figures/
