@@ -1,111 +1,176 @@
 # USGS Streamflow
 
-Projeto de preparação e análise de séries temporais hidrológicas da USGS. O notebook atual consulta séries de vazão média diária, combina observações com metadados das estações e cria uma grade diária completa para explicitar os dias sem valor como `NaN`. A análise exploratória inclui cobertura, vazões zero e lacunas; o conjunto está sendo preparado para estudos futuros de reconstrução de séries e modelos generativos ou PINNs.
+Projeto colaborativo de preparação e análise de séries temporais de vazão de rios a partir de dados públicos do **U.S. Geological Survey (USGS)**. O repositório reúne notebooks de exploração e coleta, módulos Python reutilizáveis e figuras produzidas durante as análises.
 
-## Escopo atual
+O trabalho está em fase de preparação e avaliação dos dados. **Ainda não há um modelo de reconstrução de vazões, uma PINN ou um modelo generativo implementado.** Uma decisão metodológica em andamento é comparar a adequação de dados diários com dados de maior frequência (intradiários) para a modelagem; a frequência de 15 minutos não é assumida como disponível ou preferível para todas as estações.
 
-- **Fonte:** USGS Water Data APIs, interface OGC API.
-- **API configurada no notebook:** `v0`esse v0 é pq  a api vai ser atualizada daqui a alguns anos, dexo claro que é v0 pois eu estou usando a api atual; o notebook consulta os esquemas para conferir os campos disponíveis.
-- **Período:** 2010-01-01 a 2024-12-31.
-- **Variável-alvo:** vazão (`parameter_code = "00060"`).
-- **Série atual:** estatística diária média (`statistic_id = "00003"`).
-- **Seleção espacial:** controlada por `STATES`, `USE_TOP_STATE` e `REQUIRE_FULL_COVERAGE` no notebook. O resultado observado numa execução anterior era da Califórnia; reexecute o notebook para atualizar resultados e saídas.
-- **Resolução:** diária. A API também oferece dados contínuos/de alta frequência em estações e parâmetros específicos, mas a cobertura e o intervalo real precisam ser verificados antes de migrar o estudo para 15 minutos(claude, diga a ele que pode deixar q eu tô trabalhando nisso no outro notebook, para a gente verificar de qual modo relmente seria melhor para a modelagem:diário ou intradiário - aviso da kaylany).
+## O que já foi feito
 
-O objetivo experimental recomendado é reconstruir lacunas de vazão condicionando o modelo às observações restantes e, quando disponíveis, às forçantes hidrometeorológicas, avaliando se restrições físicas melhoram o resultado. Para medir desempenho, o notebook/modelo deve ocultar trechos conhecidos durante a validação e comparar as reconstruções com as observações originais.
+- Exploração da API OGC da USGS Water Data e consulta dos esquemas das coleções, para identificar campos disponíveis.
+- Construção de catálogo de séries e estações com metadados como localização, período de registro, área de drenagem e unidade hidrológica.
+- Seleção configurável de séries de vazão diária e download em lotes, com cache local em Parquet para reaproveitar os dados.
+- Preparação exploratória de uma grade diária por série no notebook de coleta. A grade mantém dias sem observação como ausentes, sem imputá-los.
+- Implementação de módulos para ler e validar catálogos e caches Parquet, montar tabelas de observações diárias, resumir cobertura e gerar gráficos.
+- Geração de tabelas locais relacionadas à seleção de estações, candidatos sem vazão diária zero, metadados de séries contínuas e pares de estações.
+- Armazenamento de **61 figuras** de séries temporais em `reports/figure/figuras_series_temporais/`.
 
-## API e metadados
+Esses itens descrevem o estado encontrado nos arquivos locais. Os dados e caches gerados são ignorados pelo Git e, portanto, não acompanham o repositório clonado.
 
-As APIs organizam dados em **coleções**. O notebook usa principalmente:
+## Fonte e configuração dos dados diários
 
-| Coleção | O que representa | Uso no projeto |
+O notebook [`usgs_streamflow.ipynb`](usgs_streamflow/notebooks/usgs_streamflow.ipynb) usa a API OGC da USGS. Seus parâmetros atuais incluem:
+
+| Parâmetro | Configuração atual | Interpretação |
 |---|---|---|
-| `monitoring-locations` | Local físico monitorado: identificador, nome, coordenadas, estado, condado e atributos do local. | Metadados espaciais e seleção de locais do tipo `Stream` (`site_type_code = "ST"`). |
-| `time-series-metadata` | Série específica associada a um local, parâmetro, estatística/período de computação e período de registro. Um local pode ter várias séries. | Catálogo, escolha de uma série por estação e metadados de período. |
-| `daily` | Observações diárias de uma série, com horário/data, valor, unidade, estado de aprovação e qualificador. | Fonte de vazão diária usada no `df_full`. |
-| `continuous` | Observações de sensores de alta frequência, frequentemente — mas não sempre — em intervalos de 15 minutos. | Possível estudo-piloto futuro de vazão, nível ou precipitação, após conferir cobertura e frequência reais. |
+| Versão do endpoint | `v0` | Versão da API configurada no código atual; não é uma garantia de compatibilidade futura. Os esquemas devem ser conferidos novamente se a versão mudar. |
+| Período | `2010-01-01` a `2024-12-31` | Janela usada para a seleção e as consultas diárias desse notebook. |
+| Código do parâmetro | `00060` | Vazão (*discharge*), fornecida pela USGS em `ft³/s` nessa coleção. |
+| Código da estatística | `00003` | Média diária; não é uma medição instantânea. |
+| Completude mínima | `0.95` | Parâmetro do notebook para a fração mínima de dias presentes considerada na seleção final. |
 
-Identificadores importantes:
+O notebook consulta principalmente:
 
-- **`monitoring_location_id`** identifica o local físico; exemplo: `USGS-09423350`.
-- **`time_series_id`** identifica a série temporal específica e conecta metadados às observações. Use-o como chave de junção da série.
-- **`parameter_code`** indica a grandeza medida. Neste notebook, `00060` é vazão. `00065` é nível e `00045` é precipitação; a disponibilidade varia por local e período.
-- **`statistic_id`** indica a estatística da série. Neste notebook, `00003` é média. Não confunda estatística diária média com uma medição instantânea.
-- **`begin_utc` / `end_utc`** indicam o primeiro e o último horário registrados, não a continuidade do registro; a própria documentação alerta que podem existir lacunas entre eles.
-- **HUC** (`hydrologic_unit_code`) identifica uma unidade hidrológica. Não é, por si só, a área de drenagem.
-- **Coordenadas, área de drenagem e altitude** descrevem o local. Verifique unidade, datum e definição no metadado original antes de converter ou usar em equações.
+- `time-series-metadata`: características e período de registro de cada série;
+- `monitoring-locations`: identificação e metadados do local monitorado;
+- `daily`: observações diárias de vazão.
 
-### Documentação oficial
+Uma estação física pode ter várias séries. `monitoring_location_id` identifica o local; `time_series_id` identifica a série específica e relaciona seus metadados às observações.
 
-- [Portal OGC API da USGS Water Data](https://api.waterdata.usgs.gov/ogcapi/v1?f=html)
-- [Coleções disponíveis](https://api.waterdata.usgs.gov/ogcapi/v1/collections?f=json)
-- [Esquema de `monitoring-locations`](https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/schema?f=json)
-- [Esquema de `time-series-metadata`](https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/schema?f=json)
-- [Esquema de `daily`](https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/schema?f=json)
-- [Esquema de `continuous`](https://api.waterdata.usgs.gov/ogcapi/v1/collections/continuous/schema?f=json)
-- [Códigos de parâmetros](https://api.waterdata.usgs.gov/ogcapi/v1/collections/parameter-codes/items?f=html)
-- [Códigos de estatísticas](https://api.waterdata.usgs.gov/ogcapi/v1/collections/statistic-codes/items?f=html)
+### Ausência de dados e valores zero
 
-Os esquemas das coleções são a referência para nomes, tipos e descrições dos campos. Eles podem mudar entre versões da API; por isso, confira o esquema da versão configurada antes de depender de uma coluna. Respostas paginadas podem conter um link `rel=next`; o notebook percorre essas páginas. `properties` pode restringir as colunas retornadas, enquanto `skipGeometry=true` evita baixar a geometria quando ela não é necessária.
+Na grade `df_full`, uma linha é criada para cada série selecionada e cada data do período. Assim, o projeto consegue distinguir:
 
-## Dicionário de dados de `df_full`
+- **vazão zero**: valor medido igual a zero, que continua sendo uma observação válida;
+- **dia sem linha retornada**: a API não retornou uma observação para a série/data;
+- **linha retornada sem valor numérico utilizável**: existe registro, mas a vazão é ausente.
 
-`df_full` é a tabela analítica diária. A grade é formada por cada `time_series_id` selecionado × cada data do período e então recebe as observações e os metadados. Portanto, dias sem observação permanecem visíveis; nenhum valor é imputado nesta etapa.
+O notebook mantém `NaN` em vez de preencher ou interpolar esses casos. `record_returned` indica se a API retornou uma linha, e `is_missing` indica valor de vazão ausente. A vazão também é convertida de `ft³/s` para `m³/s` em `value_m3s`, sem preencher valores ausentes.
 
-| Coluna | Significado |
-|---|---|
-| `date` | Data diária da grade. A interpretação da data deve ser consistente com o horário/fuso definido pela API para a série. |
-| `monitoring_location_id` | Identificador USGS do local físico. |
-| `time_series_id` | Identificador único da série da USGS; chave para localizar a observação e seus metadados de série. |
-| `monitoring_location_name` | Nome descritivo do local. |
-| `state_name`, `county_name` | Estado/território e condado informados para o local. |
-| `lat`, `lon` | Latitude e longitude do ponto do local, quando disponíveis. |
-| `drainage_area` | Área de drenagem informada no metadado. Confirmar a unidade antes de convertê-la para balanço hídrico. |
-| `altitude` | Altitude informada no metadado; verificar datum/unidade se for usada quantitativamente. |
-| `site_huc` | Código da unidade hidrológica do local (HUC). |
-| `value_cfs` | Valor diário de vazão na unidade original da série; no recorte `00060`, ft³/s. |
-| `value_m3s` | Vazão convertida de ft³/s para m³/s. `NaN` permanece `NaN`. |
-| `unit_of_measure` | Unidade indicada pela USGS para a série/observação. Conferir antes de combinar séries. |
-| `approval_status` | Estado de aprovação, por exemplo `Approved` ou `Provisional`; provisórios podem ser revisados. |
-| `qualifier` | Qualificadores da observação (por exemplo, estimativa ou possível efeito de gelo), quando fornecidos. |
-| `record_returned` | `True` se a API retornou uma linha para a série/data; `False` se a grade não encontrou linha correspondente. |
-| `is_missing` | `True` quando `value_cfs` é ausente/não numérico; inclui lacunas da grade e linhas retornadas sem valor utilizável. |
+## Frequência diária ou intradiária
 
-**Distinções essenciais:** vazão igual a zero é uma medição válida, não ausência. `record_returned=False` indica ausência de linha da API; `record_returned=True` junto de `is_missing=True` indica que houve linha, mas sem valor numérico utilizável. Os `NaN` não devem ser removidos ou imputados antes da análise de cobertura/validação. Os indicadores de ausência também podem ser usados como máscaras de observação em modelos.
+A base diária é o fluxo atualmente implementado no notebook de coleta. Há também arquivos locais e tabelas relacionados à coleção `continuous`, que fornece observações de maior frequência, mas o intervalo real e a cobertura variam por série, estação e parâmetro.
 
-## Variáveis úteis para uma PINN ou modelo gerativo
+A comparação entre dados diários e intradiários **continua em investigação**. Antes de escolher a resolução para a modelagem, é necessário verificar a frequência efetiva, as lacunas, os qualificadores, a cobertura espacial e a compatibilidade com as variáveis auxiliares. Não se deve presumir que toda série contínua tenha intervalo de 15 minutos. No estado atual do repositório, os dois notebooks versionados são os listados abaixo; não foi encontrado um notebook versionado que reproduza uma rotina completa de coleta intradiária.
 
-- **Vazão (`00060`):** variável-alvo.
-- **Nível (`00065`):** potencial observação auxiliar; relação nível–vazão depende da curva-chave e pode variar.
-- **Precipitação (`00045`):** pode ser uma forçante local pontual; não representa automaticamente a precipitação média da bacia.
-- **Evapotranspiração e precipitação espaciais:** provavelmente serão necessárias fontes externas à USGS para um balanço hídrico de bacia. Agregue à área de drenagem e alinhe a resolução temporal.
-- **Área de drenagem e HUC:** contexto espacial para selecionar/agregar forçantes; confirme unidade da área e delineamento da bacia.
+## Estrutura do repositório
 
-Não misture vazão de 15 minutos com chuva diária sem uma estratégia física e temporal explícita. A coleção `continuous` é de alta frequência e costuma ter intervalo fixo de 15 minutos, mas intervalo, disponibilidade, lacunas, qualificadores e status devem ser medidos por estação e parâmetro. Recomenda-se um piloto em poucas estações antes de um download nacional.
-
-## Arquivos e execução
-
-- `src/config.py`, `src/api.py`, `src/catalog.py`, `src/processing.py`, `src/plots.py` e `src/main.py` — configuração, cliente opcional da USGS OGC API, carregamento dos Parquets locais, preparação da tabela de observações, resumos, gráficos e pontos de entrada.
-- `notebooks/usgs_streamflow.ipynb` — coleta, preparação e análise exploratória.
-- `notebooks/análise_seleção.ipynb` — interface modular que filtra os Parquets diários pela seleção em `stations_full.parquet` e cria uma tabela longa com `date`, `value_cfs` e `monitoring_location_id`; não cria datas ausentes nem chama a API.
-- `notebooks/central_dados_usgs.ipynb` — interface anterior de exploração dos arquivos locais, resumo de lacunas/zeros e gráficos por estação.
-- `notebooks/usgs_continuous_15min.ipynb` — inventário e download controlado das séries USGS contínuas para estações sem vazão diária zero.
-- `data/usgs/raw/` — cache Parquet do catálogo e dos lotes de observações; permite reaproveitar downloads.
-- `data/usgs/processed/catalog_stations.csv` — catálogo de séries/estações incluídas pela etapa de seleção.
-- `data/usgs/processed/stations_no_zero_continuous_candidates.csv` — estações reconstruídas a partir dos caches diários com observações e sem vazão zero.
-- `data/usgs/processed/continuous_series_catalog.csv` — metadados das séries contínuas disponíveis para as estações selecionadas.
-- `data/usgs/raw/continuous/` — páginas Parquet retomáveis das observações de alta frequência, após habilitar explicitamente o download no novo notebook.
-- `data/usgs/raw/daily_<parâmetro>_<estatística>_<início>_<fim>_*.parquet` — observações diárias locais usadas por `análise_seleção.ipynb`.
-- `data/usgs/processed/stations_full.parquet` — seleção de séries/estações usada para limitar a tabela de análise.
-- `df_full` — grade diária completa produzida na memória pelo notebook exploratório; `análise_seleção.ipynb` tem outro objetivo e usa somente linhas existentes nos Parquets.
-- `.env` — pode conter `USGS_API_KEY`; não versionar nem compartilhar.
-
-### Executar no VS Code (Windows)
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+```text
+usgs_dados_streamflow/
+├── README.md
+├── reports/
+│   └── figure/
+│       └── figuras_series_temporais/   # figuras PNG produzidas
+└── usgs_streamflow/
+    ├── .env.example                    # exemplo de variável de ambiente
+    ├── .gitignore                      # ignora dados locais, ambiente e caches
+    ├── requirements.txt
+    ├── notebooks/
+    │   ├── usgs_streamflow.ipynb       # consulta à API e exploração diária
+    │   └── análise_seleção.ipynb        # análise local de caches existentes
+    ├── src/
+    │   ├── api.py
+    │   ├── catalog.py
+    │   ├── config.py
+    │   ├── main.py
+    │   ├── plots.py
+    │   └── processing.py
+    └── data/                            # dados locais; não versionados
 ```
 
-Abra a pasta do projeto no VS Code, selecione o kernel `.venv` para `notebooks/usgs_streamflow.ipynb` e execute as células em ordem. Execute novamente as células após alterar parâmetros; outputs salvos no notebook podem refletir uma execução anterior. O notebook cria os diretórios de dados necessários. A API key é opcional no código atual, mas a ausência dela pode reduzir limites de uso.
+### Código Python
+
+- `src/config.py`: define os caminhos de `data/` e as configurações da API; lê `.env` se existir.
+- `src/api.py`: cliente opcional da API OGC, com paginação e novas tentativas para erros temporários e limite de requisições. Os fluxos locais de análise não chamam esse cliente implicitamente.
+- `src/catalog.py`: lista e carrega CSV/Parquet dentro da pasta de dados, valida a seleção de estações e lê os caches diários. As exportações são criadas em `data/exports/` e não sobrescrevem arquivos existentes.
+- `src/processing.py`: relaciona observações às estações, mantém apenas dias já observados e calcula resumos por estação.
+- `src/plots.py`: cria gráfico temporal para uma estação.
+- `src/main.py`: combina carregamento, processamento e resumo para uso no notebook.
+
+### Notebooks
+
+1. **[`usgs_streamflow.ipynb`](usgs_streamflow/notebooks/usgs_streamflow.ipynb)** — consulta os esquemas da API, constrói o catálogo, seleciona séries e baixa vazões diárias em lotes com cache Parquet. Forma `df_full` em memória com a grade de datas, metadados e indicadores de ausência.
+2. **[`análise_seleção.ipynb`](usgs_streamflow/notebooks/análise_seleção.ipynb)** — usa os módulos de `src/` para indexar os arquivos locais, montar uma tabela longa com observações existentes, resumir cobertura por estação e visualizar uma estação. Não consulta a API nem cria linhas para dias ausentes.
+
+## Dados gerados e reprodutibilidade
+
+O `.gitignore` dentro de `usgs_streamflow/` contém a regra `data/`; por isso, **todo o conteúdo dessa pasta é ignorado**, inclusive arquivos processados, catálogos CSV e caches Parquet. `.env`, `.venv/`, `__pycache__/` e `.ipynb_checkpoints/` também são ignorados.
+
+Exemplos de arquivos gerados localmente incluem:
+
+- `data/usgs/raw/`: catálogo e lotes diários em Parquet;
+- `data/usgs/raw/continuous/`: caches locais de observações da coleção `continuous`;
+- `data/usgs/processed/catalog_stations.csv`: catálogo de estações;
+- `data/usgs/processed/stations_no_zero_continuous_candidates.csv`: resumo de estações candidatas com observações diárias e sem zeros;
+- `data/usgs/processed/continuous_series_catalog.csv`: metadados de séries contínuas;
+- `data/usgs/processed/pares_nldi_UM_150km.csv` e `pares_nldi_UT_150km.csv`: pares de estações registrados nos recortes correspondentes;
+- `data/usgs/processed/stations_full.parquet`: seleção consumida pelo notebook de análise local.
+
+**Atenção ao clonar:** esses arquivos não estarão no GitHub. O notebook de análise local precisa de `stations_full.parquet` e dos Parquets diários compatíveis com o período e os códigos configurados. No código analisado, o notebook de coleta cria `selected`/`stations_full` em memória, mas não salva automaticamente `stations_full.parquet`; a origem desse arquivo precisa ser providenciada para reproduzir o segundo notebook em uma instalação limpa. Guarde dados necessários fora do repositório ou gere/provisione esses arquivos localmente; não remova a regra `data/` sem antes avaliar o tamanho e a política de compartilhamento dos dados.
+
+## Instalação
+
+Os comandos a seguir são para Git Bash no Windows, a partir da raiz do repositório:
+
+```bash
+cd usgs_streamflow
+python -m venv .venv
+source .venv/Scripts/activate
+python -m pip install -r requirements.txt
+```
+
+No VS Code, selecione o interpretador e o kernel Jupyter da pasta `usgs_streamflow/.venv`.
+
+### Chave da API
+
+A configuração do código aceita `USGS_API_KEY`; a chave é opcional no cliente atual, mas pode ser útil para limites de uso da API. Se você tiver uma chave, copie o exemplo e edite o arquivo local:
+
+```bash
+cp .env.example .env
+```
+
+Substitua o valor de exemplo por sua chave. **Nunca compartilhe nem faça commit do `.env`.** O arquivo `.env.example` contém apenas um marcador de exemplo.
+
+## Como executar
+
+Para coletar/atualizar o fluxo diário, abra `usgs_streamflow/notebooks/usgs_streamflow.ipynb` no VS Code e execute as células em ordem. A execução faz solicitações à API e grava caches locais em `usgs_streamflow/data/usgs/`; o tempo e o volume dependem da quantidade de séries selecionadas. Confira os parâmetros do notebook antes de iniciar uma coleta ampla.
+
+Para trabalhar com os caches já existentes, abra `usgs_streamflow/notebooks/análise_seleção.ipynb` e execute as células em ordem. Esse notebook não baixa os dados ausentes: ele exige os arquivos locais descritos em [Dados gerados e reprodutibilidade](#dados-gerados-e-reprodutibilidade).
+
+Os outputs salvos nos notebooks podem pertencer a uma execução anterior. Reexecute as células para atualizar resultados após mudar os parâmetros ou os dados.
+
+## Dependências e validação
+
+As dependências estão listadas em [`usgs_streamflow/requirements.txt`](usgs_streamflow/requirements.txt): Requests, pandas, PyArrow, NumPy, Matplotlib, SciPy, statsmodels, python-dotenv e IPython kernel. O arquivo não fixa versões e o repositório não especifica uma versão mínima de Python. Não foram encontrados arquivos de testes automatizados no estado analisado.
+
+## Trabalho em equipe
+
+Para manter `main` estável, cada pessoa deve trabalhar em uma branch para sua tarefa e abrir um Pull Request para revisão antes de integrar as mudanças:
+
+```bash
+git switch main
+git pull
+git switch -c feature/nome-da-tarefa
+# faça as alterações
+git add .
+git commit -m "Descreve a alteração"
+git push -u origin feature/nome-da-tarefa
+```
+
+No GitHub, abra um Pull Request da branch para `main`. Não inclua arquivos ignorados usando `git add -f` sem combinar antes com a equipe.
+
+## Figuras
+
+As figuras existentes estão em [`reports/figure/figuras_series_temporais/`](reports/figure/figuras_series_temporais/).
+
+![Série temporal USGS 11362900](reports/figure/figuras_series_temporais/01_USGS-11362900.png)
+
+## Referências da USGS
+
+- [Portal da API OGC Water Data](https://api.waterdata.usgs.gov/ogcapi/v1?f=html)
+- [Coleções disponíveis](https://api.waterdata.usgs.gov/ogcapi/v1/collections?f=json)
+- [Esquema de monitoring-locations](https://api.waterdata.usgs.gov/ogcapi/v1/collections/monitoring-locations/schema?f=json)
+- [Esquema de time-series-metadata](https://api.waterdata.usgs.gov/ogcapi/v1/collections/time-series-metadata/schema?f=json)
+- [Esquema de daily](https://api.waterdata.usgs.gov/ogcapi/v1/collections/daily/schema?f=json)
+- [Esquema de continuous](https://api.waterdata.usgs.gov/ogcapi/v1/collections/continuous/schema?f=json)
+- [Códigos de parâmetros](https://api.waterdata.usgs.gov/ogcapi/v1/collections/parameter-codes/items?f=html)
+- [Códigos de estatísticas](https://api.waterdata.usgs.gov/ogcapi/v1/collections/statistic-codes/items?f=html)
