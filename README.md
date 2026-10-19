@@ -119,10 +119,13 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 
 ## Fluxo atual do projeto
 
-1. **Download** (`download.ipynb` → `src/download.py`): catálogo de séries, locais do tipo Stream, seleção de uma série por estação e download das séries diárias, um Parquet por série em `data/usgs/raw/parquets/`;
-2. **Tabela por estação e dia** (`src/processing.py`): junta as séries com a lista de estações e completa o calendário, com `NaN` nos dias sem valor;
-3. **Tabela de modelagem** (`construcao_bases_modelos.ipynb` → `src/model_data.py`): rótulos, splits cronológicos, seleção de estações pelo treino, pontos escondidos e normalização;
-4. **Entrada de cada modelo** (`src/model_inputs.py`) e **métricas** (`src/evaluation.py`).
+1. **Download** (`notebooks/download.ipynb` → `src/download.py`): consulta o catálogo de séries e os locais do tipo Stream, seleciona uma série por estação conforme `DownloadConfig.states` e baixa as séries diárias. A seleção fica em `..._selected.csv` e cada série em um Parquet em `data/usgs/raw/parquets/`. A configuração documentada baixa California, Montana e Minnesota; se os estados ou arquivos locais forem outros, o escopo também muda.
+2. **Análise das observações** (`notebooks/análise_seleção.ipynb` → `build_analysis_dataset`): lê a seleção e os Parquets locais, associa cada série à sua estação e resume a cobertura. `df_analysis` contém as observações existentes; não cria linhas para dias sem registro.
+3. **Calendário diário completo** (`complete_daily_calendar`, em `src/processing.py`): quando aplicado a `df_analysis`, cria uma linha para cada dia do período configurado para cada estação que já está nesse DataFrame. Dias sem observação recebem `NaN`. A função não consulta a API, não escolhe estações e não restringe os dados à Califórnia: o conjunto de estações vem da seleção carregada antes dela. Também é chamada por `build_model_dataset`, no fluxo de `notebooks/construcao_bases_modelos.ipynb`.
+4. **Tabela de modelagem** (`notebooks/construcao_bases_modelos.ipynb` → `src/model_data.py`): cria rótulos, splits cronológicos, seleção de estações pelo treino, pontos escondidos e normalização.
+5. **Entrada de cada modelo** (`src/model_inputs.py`) e **métricas** (`src/evaluation.py`).
+
+**Sobre as saídas salvas nos notebooks:** os resultados já exibidos em `análise_seleção.ipynb` podem ser de uma execução anterior, com período e seleção de estações diferentes. Para saber quais dados estão sendo usados agora, confira `USGS.date_start`/`USGS.date_end` e a coluna de estado do arquivo `..._selected.csv`; ao alterar os arquivos ou a configuração, reexecute as células do notebook.
 
 A estrutura de dados usada no código prefere preservar observações existentes e manter ausências como `NaN`, em vez de preencher ou interpolar dias faltantes. Isso permite distinguir:
 
