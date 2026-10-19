@@ -7,13 +7,14 @@ Este repositório reúne um fluxo local de coleta, validação e análise de sé
 O projeto está em fase de preparação e análise exploratória de dados. Ele já inclui:
 
 - catálogo e seleção de estações pelo USGS;
-- downloads locais em Parquet para dados diários;
+- pipeline de download (`src/download.py`) que salva um Parquet por série e retoma de onde parou se a execução cair;
 - validação de arquivos CSV/Parquet em `data/`;
 - construção de tabelas de observações por estação;
 - resumos de cobertura por local monitorado;
-- visualização de séries temporais.
-
+- visualização de séries temporais;
 - tabela de modelagem compartilhada (`src/model_data.py`) para o trabalho de modelos probabilísticos: rótulos de anomalia a partir dos códigos de qualidade da USGS, splits cronológicos, pontos escondidos para avaliação e normalização sem vazamento.
+
+Os dados atuais cobrem **2010-01-01 a 2025-12-31** em três estados (California, Montana e Minnesota). O passo a passo para baixar os dados e montar a base está em [Do download à base dos modelos](#do-download-à-base-dos-modelos).
 
 Os modelos (GP Student‑t, RGP‑t e Bayesian GPLVM) ainda não estão implementados; eles consomem a tabela descrita em [Tabela de modelagem](#tabela-de-modelagem).
 
@@ -29,7 +30,7 @@ usgs_streamflow/
 │   ├── intermediate/
 │   ├── raw/
 │   ├── exports/
-│   │   └── serie.parquet          (gerado por build_model_dataset)
+│   │   └── serie.parquet          (exportado pelo construcao_bases_modelos.ipynb)
 │   └── usgs/
 │       ├── processed/
 │       │   ├── catalog_stations.csv
@@ -39,14 +40,22 @@ usgs_streamflow/
 │       │   ├── stations_full.parquet
 │       │   └── stations_no_zero_continuous_candidates.csv
 │       └── raw/
-│           ├── catalog_timeseries.parquet
-│           ├── daily_...*.parquet
+│           ├── parquets/                                   (gerado por src/download.py)
+│           │   ├── catalog_timeseries.parquet              (catálogo de séries, cache)
+│           │   ├── sites_ST_<estado>_all.parquet           (locais Stream por estado, cache)
+│           │   ├── daily_00060_00003_2010-01-01_2025-12-31/
+│           │   │   └── <time_series_id>.parquet            (uma série por arquivo)
+│           │   ├── daily_00060_00003_2010-01-01_2025-12-31_selected.csv
+│           │   └── df_full_2010-01-01_2025-12-31.parquet   (tabela série × dia, opcional)
+│           ├── backup/                                     (downloads antigos, 2010–2024, por lote)
 │           └── continuous/
 ├── notebooks/
 │   ├── análise_seleção.ipynb
-│   ├── construcao_bases_modelos.ipynb   (novo)
+│   ├── construcao_bases_modelos.ipynb
+│   ├── download.ipynb
 │   └── usgs_streamflow.ipynb
 ├── references/
+│   ├── Consideracoes_anomalias.md
 │   ├── Formato dos dados caso univariado e multivariado.md
 │   └── Relatório técnico GPs para séries com faltantes e anomalias.md
 ├── reports/
@@ -56,10 +65,11 @@ usgs_streamflow/
 │   ├── api.py
 │   ├── catalog.py
 │   ├── config.py
+│   ├── download.py
 │   ├── main.py
-│   ├── evaluation.py              (novo)
-│   ├── model_data.py              (novo)
-│   ├── model_inputs.py            (novo)
+│   ├── evaluation.py
+│   ├── model_data.py
+│   ├── model_inputs.py
 │   ├── plots.py
 │   └── processing.py
 └── .venv/  (ambiente local, não versionado)
@@ -71,49 +81,48 @@ usgs_streamflow/
 
 Os dados locais e procesados ficam em `data/` e incluem:
 
-- `data/usgs/raw/`: catálogo e arquivos Parquet de séries diárias, com dados brutos do USGS e caches locais para reutilização;
+- `data/usgs/raw/parquets/`: tudo o que o download gera. O catálogo e os locais Stream ficam em cache; cada série diária fica em `daily_<parâmetro>_<estatística>_<início>_<fim>/<time_series_id>.parquet`, e as séries escolhidas ficam listadas em `..._selected.csv`;
+- `data/usgs/raw/backup/`: arquivos do download antigo (período 2010–2024, um arquivo por lote com hash no nome, como `daily_00060_00003_2010-01-01_2024-12-31_0d85f2e0eb25.parquet`). Não são usados pelo fluxo atual;
 - `data/usgs/processed/`: tabelas e arquivos processados, como `stations_full.parquet`, `catalog_stations.csv` e os pares NLDI;
 - `data/intermediate/`: diretório reservado para intermediários e arquivos de apoio;
 - `reports/figures/`: pasta para figuras produzidas durante a análise.
 
 ### Notebooks
 
-- `notebooks/usgs_streamflow.ipynb`: notebook principal para consulta à API e preparação do catálogo, com seleção e download de dados diários;
-- `notebooks/análise_seleção.ipynb`: notebook de análise local com base nos arquivos já presentes em `data/`, sem depender de nova chamada à API;
-- `notebooks/construcao_bases_modelos.ipynb`: mostra como montar a tabela compartilhada, a entrada de cada modelo por bloco (`X_train`, `Y_train`, `X_val`…), o formato da saída e o cálculo das métricas, a partir dos Parquets locais.
+- `notebooks/download.ipynb`: baixa os dados da API com `src/download.py` (catálogo, locais Stream, seleção e séries diárias) e monta a tabela série × dia (`df_full`). É o ponto de partida do fluxo atual;
+- `notebooks/construcao_bases_modelos.ipynb`: a partir dos arquivos gerados pelo `download.ipynb`, monta a tabela compartilhada (`serie`), a entrada de cada modelo por bloco (`X_train`, `Y_train`, `X_val`…), o formato da saída e o cálculo das métricas. Não consulta a API;
+- `notebooks/usgs_streamflow.ipynb`: notebook original de consulta à API, com a exploração do esquema e do catálogo. A lógica de download dele foi levada para `src/download.py`; continua útil para explorar a API;
+- `notebooks/análise_seleção.ipynb`: notebook de análise local com base nos arquivos já presentes em `data/`, sem depender de nova chamada à API.
 
 ### Referências
 
 A pasta `references/` guarda os documentos de planejamento do trabalho de modelagem. Eles não são lidos pelo código: servem como especificação de onde vieram as decisões implementadas em `src/model_data.py`, `src/model_inputs.py` e `src/evaluation.py`, e como guia comum para quem implementa cada modelo.
 
 - `Relatório técnico GPs para séries com faltantes e anomalias.md`: descreve o problema (faltantes, sazonalidade, picos anômalos e dependência temporal), os três modelos (GP Student‑t, RGP‑t e Bayesian GPLVM), a divisão do trabalho por pessoa, a implementação prevista com GPyTorch/BoTorch e as ressalvas a declarar;
-- `Formato dos dados caso univariado e multivariado.md`: define o formato da base comum e da saída dos modelos nos casos univariado e multivariado, como cada modelo lê os dados, os rótulos de anomalia a partir dos códigos de qualidade e o que entra no treino e na avaliação.
+- `Formato dos dados caso univariado e multivariado.md`: define o formato da base comum e da saída dos modelos nos casos univariado e multivariado, como cada modelo lê os dados, os rótulos de anomalia a partir dos códigos de qualidade e o que entra no treino e na avaliação;
+- `Consideracoes_anomalias.md`: análise de por que poucas estações têm anomalias rotuladas fora do treino, as opções para contornar isso (mais estações, `candidates`, teste maior) com os riscos de vazamento de cada uma, e onde mudar estados e filtros.
 
 Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias com `serie.csv`); quando houver diferença, vale o que está descrito neste README e no código (dados diários, `serie.parquet`).
 
 ### Módulos Python
 
 - `src/config.py`: define as rotas do projeto e as configurações padrão da API, além de ler variáveis do arquivo `.env` no diretório raiz;
-- `src/api.py`: cliente opcional para a API OGC da USGS, com paginação e tratamento de erros temporários;
-- `src/catalog.py`: carrega, valida e indexa CSV e Parquet, além de ler os caches diários (incluindo `approval_status` e `qualifier`, quando presentes);
+- `src/api.py`: cliente para a API OGC da USGS, com paginação, envio da chave (`X-Api-Key`) e nova tentativa em erros temporários (429, 5xx);
+- `src/download.py`: pipeline de download (`DownloadConfig`, `run_pipeline`, `load_daily`). Repete as etapas do `usgs_streamflow.ipynb`, mas grava cada série assim que o lote dela termina, pula o que já está em disco e registra os lotes que falharam;
+- `src/catalog.py`: carrega, valida e indexa CSV e Parquet (`load_dataset`, `build_dataset_index`, `export_dataset`). Também guarda os leitores do formato antigo (`stations_full.parquet` e um arquivo por lote em `data/usgs/raw/`), que o fluxo atual não usa;
 - `src/processing.py`: transforma observações em tabela analítica por estação, calcula sumários de cobertura e completa o calendário diário sem imputar valores;
 - `src/model_data.py`: monta a tabela de modelagem (rótulos, splits, seleção de estações, pontos escondidos e normalização);
 - `src/model_inputs.py`: converte a tabela na entrada de cada modelo (`gp_inputs`, `rgp_inputs`, `gplvm_inputs`), sem NaN;
 - `src/evaluation.py`: confere o formato da saída dos modelos e calcula as métricas de reconstrução, conformal e detecção de anomalias;
 - `src/plots.py`: gera gráficos de série temporal por estação;
-- `src/main.py`: orquestra a criação da tabela analítica, do resumo por estação e da tabela de modelagem (`build_model_dataset`).
+- `src/main.py`: a partir dos arquivos gerados pelo download, monta a tabela de observações (`build_observation_table`), o resumo por estação (`build_analysis_dataset`) e a tabela de modelagem (`build_model_dataset`). Por padrão, usa o período, o parâmetro e a estatística de `src/config.py` (`.env`); para outros valores, passe `config=DownloadConfig(...)`.
 
 ## Fluxo atual do projeto
 
-A pipeline atual combina dados do USGS com dados locais já coletados. O fluxo típico é:
-
-1. consultar metadados da API e definir a seleção de séries;
-2. armazenar arquivos em Parquet em `data/usgs/raw/`;
-3. validar e carregar vetores de estações em `data/usgs/processed/`;
-4. montar uma tabela de observações por data e estação;
-5. resumir registros, vazões ausentes e vazões zero;
-6. produzir gráficos de série temporal.
-7. montar a tabela de modelagem (`build_model_dataset`) para os modelos probabilísticos.
+1. **Download** (`download.ipynb` → `src/download.py`): catálogo de séries, locais do tipo Stream, seleção de uma série por estação e download das séries diárias, um Parquet por série em `data/usgs/raw/parquets/`;
+2. **Tabela por estação e dia** (`src/processing.py`): junta as séries com a lista de estações e completa o calendário, com `NaN` nos dias sem valor;
+3. **Tabela de modelagem** (`construcao_bases_modelos.ipynb` → `src/model_data.py`): rótulos, splits cronológicos, seleção de estações pelo treino, pontos escondidos e normalização;
+4. **Entrada de cada modelo** (`src/model_inputs.py`) e **métricas** (`src/evaluation.py`).
 
 A estrutura de dados usada no código prefere preservar observações existentes e manter ausências como `NaN`, em vez de preencher ou interpolar dias faltantes. Isso permite distinguir:
 
@@ -141,16 +150,126 @@ python -m pip install -r requirements.txt
 
 O arquivo `src/config.py` carrega um `.env` na raiz do projeto quando ele existe. As variáveis usadas no código incluem, por exemplo:
 
+- `USGS_API_KEY` (recomendada: sem chave, o limite de requisições por hora é baixo e o erro 429 é frequente)
 - `USGS_API_VERSION` (padrão: `v0`)
 - `USGS_DATE_START` (padrão: `2010-01-01`)
-- `USGS_DATE_END` (padrão: `2024-12-31`)
+- `USGS_DATE_END` (padrão: `2025-12-31`)
 - `USGS_PARAMETER_CODE` (padrão: `00060`)
 - `USGS_STATISTIC_ID` (padrão: `00003`)
-- `USGS_API_KEY` (opcional)
 
-## Como usar
+O `.env` fica na raiz do projeto, não é versionado (está no `.gitignore`) e tem uma variável por linha, sem aspas:
+
+```
+USGS_API_KEY=sua_chave_de_40_caracteres
+```
+
+A chave é gratuita: https://api.waterdata.usgs.gov/signup/. O `.env` é lido quando o pacote `src` é importado; depois de alterá-lo, **reinicie o kernel** do notebook. Nunca escreva a chave dentro de um notebook, porque os `.ipynb` são versionados.
+
+As datas do `.env` (ou os padrões de `src/config.py`) definem quais arquivos `build_model_dataset` e `build_analysis_dataset` leem. O download usa as datas passadas em `DownloadConfig`, no `download.ipynb`. Se mudar o período, mude nos dois lugares.
+
+## Do download à base dos modelos
+
+Passo a passo para baixar os dados da API e gerar a `serie` usada pelos três modelos. Antes, configure o ambiente e a chave (seção anterior).
+
+### Passo 1: baixar os dados (`notebooks/download.ipynb`)
+
+**Célula 1, caminho do projeto** (rode sempre que reiniciar o kernel):
+
+```python
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+sys.path.insert(0, str(PROJECT_ROOT))
+```
+
+**Célula 2, parâmetros e download:**
+
+```python
+from src.download import DownloadConfig, run_pipeline, load_daily
+
+cfg = DownloadConfig(
+    date_start="2010-01-01",
+    date_end="2025-12-31",
+    parameter_code="00060",        # vazão (discharge), ft3/s
+    statistic_id="00003",          # média diária
+    states=("California", "Montana", "Minnesota"),  # None = todos os estados
+    use_top_state=False,           # True = só o estado com mais estações (ignora a lista acima)
+    require_full_coverage=False,   # True = só séries cujo registro cobre o período inteiro
+    all_columns=True,              # True = todas as colunas que a API oferece
+    max_sites=None,                # None = todas as estações dos estados
+    seed=42,                       # semente do sorteio, usada quando há max_sites
+    batch_size=8,                  # séries por requisição
+)
+selected, summary = run_pipeline(cfg)
+```
+
+`run_pipeline` faz, em ordem:
+
+1. lê o esquema da API e escolhe os nomes de campo da versão (`begin_utc`/`end_utc` etc.);
+2. baixa o catálogo de séries de vazão média diária (`time-series-metadata`), com cache em `catalog_timeseries.parquet`;
+3. marca a cobertura de cada série (`overlaps`: toca o período; `full_coverage`: cobre o período inteiro, com 1 dia de tolerância);
+4. busca os locais do tipo Stream (`site_type_code = ST`) de cada estado, com cache em `sites_ST_<estado>_all.parquet`, e mantém só as séries desses locais;
+5. escolhe uma série por estação (a `primary` e, no empate, a de início mais antigo) e, se houver `max_sites`, sorteia as estações com `seed`. A lista vai para `..._selected.csv`;
+6. baixa as séries pendentes em lotes de `batch_size` e grava **cada série no próprio arquivo** assim que o lote termina. Em cada lote, confere se vieram séries não pedidas e datas fora do período; se o lote passar de 50.000 linhas, é dividido ao meio.
+
+**Se cair** (rede, erro 429, kernel reiniciado ou Ctrl+C): rode a Célula 2 de novo. O que já está em disco é pulado e só as séries pendentes são baixadas. Um lote que falha é registrado e pulado; a execução para depois de 5 falhas seguidas (`max_consecutive_failures`).
+
+**Célula 3, conferir se terminou:**
+
+```python
+print(f"{len(summary['pending'])} séries pendentes | {len(summary['failures'])} lotes com falha")
+```
+
+Repita a Célula 2 até `pending` zerar. Séries para as quais a API não devolve dados no período ficam salvas como arquivo vazio e não são consultadas de novo.
+
+**Célula 4 (opcional), juntar as séries:** `daily = load_daily(cfg, selected["time_series_id"])` devolve todas as observações num só DataFrame (o mesmo `daily` do notebook antigo). A partir dele, o `download.ipynb` monta e salva o `df_full` (uma linha por série e dia, com metadados da estação e vazão em m³/s).
+
+**Cada arquivo de série** tem uma linha por dia com valor (dias sem valor não têm linha) e as colunas `time_series_id`, `monitoring_location_id`, `parameter_code`, `statistic_id`, `unit_of_measure`, `approval_status`, `qualifier`, `last_modified`, `time_api`, `date` e `value_cfs`.
+
+Para trocar de estados, rode de novo com outra lista em `states`: as séries já baixadas são reaproveitadas, e o `..._selected.csv` passa a listar a nova seleção. Baixar a rede inteira (`states=None`, `use_top_state=False`) significa milhares de estações e mais de mil lotes, o que leva horas.
+
+### Passo 2: montar a base dos modelos (`notebooks/construcao_bases_modelos.ipynb`)
+
+Reinicie o kernel e rode o notebook em ordem. A célula da seção 3.1 lê os arquivos do Passo 1:
+
+```python
+from src.main import build_model_dataset
+from src.model_data import SelectionConfig, SplitConfig, split_summary
+
+SELECAO = SelectionConfig(n_sensors=200, min_completeness=0.95, max_zero_frac=0.05, candidates=None, seed=42)
+SPLITS = SplitConfig(fracs=(0.60, 0.15, 0.10, 0.15), hidden_frac=0.10, hidden_block_len=1, seed=42)
+
+serie, stats = build_model_dataset(SELECAO, SPLITS)
+```
+
+`build_model_dataset` lê a lista `..._selected.csv` e as séries do período de `src/config.py`, monta uma linha por estação e dia (com `NaN` nos faltantes, sem imputação) e depois cria rótulos, blocos, seleção de estações, pontos escondidos e normalização. Para ler outro período ou outra pasta, passe `config=DownloadConfig(date_start=..., date_end=..., out_dir=...)`.
+
+Depois disso:
+
+- `split_summary(serie)` mostra, por bloco, o período, os dias visíveis, os escondidos, as anomalias e os provisórios. **Confira se `validacao`, `calibracao` e `teste` têm anomalias**: sem elas, as métricas de detecção ficam vazias (veja [Anomalias fora do treino](#anomalias-fora-do-treino));
+- a seção 4 gera a entrada de cada modelo (`gp_inputs`, `rgp_inputs`, `gplvm_inputs`);
+- para compartilhar a base, `export_dataset(serie, "serie_2010_2025.parquet")` grava em `data/exports/` sem sobrescrever arquivos existentes; guarde também `stats`, que desfaz a normalização.
+
+### Onde mudar cada coisa
+
+| O que | Onde |
+|---|---|
+| Período, estados, cobertura, número de estações baixadas | `DownloadConfig`, no `download.ipynb` |
+| Estações que entram na `serie` (quantidade, completude, zeros, lista de candidatas) | `SelectionConfig`, no `construcao_bases_modelos.ipynb` |
+| Proporção dos blocos, pontos escondidos, transformação | `SplitConfig`, no `construcao_bases_modelos.ipynb` |
+| Códigos que viram anomalia | `PROBLEM_QUALIFIERS`, em `src/model_data.py` |
+| Chave da API | `.env` |
+
+Se `n_sensors` passar do número de estações que atendem aos filtros, aparece o erro `Só N estações passam nos filtros; pedido: M`; N é o máximo possível.
+
+## Outros usos
+
+Todos leem os arquivos locais gerados pelo download; nenhum consulta a API.
 
 ### 1. Executar a análise local
+
+Uma linha por estação e dia com valor (dias sem linha não são criados), mais um resumo de cobertura por estação. É o que o `análise_seleção.ipynb` usa.
 
 ```python
 from src.main import build_analysis_dataset
@@ -165,48 +284,46 @@ print(summary.head())
 ```python
 from src.catalog import load_dataset
 
-df = load_dataset("data/usgs/processed/stations_full.parquet")
+df = load_dataset("data/usgs/raw/parquets/df_full_2010-01-01_2025-12-31.parquet")
 print(df.head())
 ```
 
-### 3. Gerar a tabela de modelagem
+Lê qualquer CSV ou Parquet dentro de `data/`.
+
+### 3. Gerar a tabela de modelagem fora do notebook
 
 ```python
 from src.main import build_model_dataset, export_dataset, SelectionConfig, SplitConfig
-from src.model_data import split_summary
 
-serie, stats = build_model_dataset(
-    SelectionConfig(n_sensors=10, min_completeness=0.95, max_zero_frac=0.05),
-    SplitConfig(fracs=(0.60, 0.15, 0.10, 0.15), hidden_frac=0.10, hidden_block_len=1),
-)
-print(split_summary(serie))            # conferir períodos, escondidos, anomalias e provisórios
-export_dataset(serie, "serie.parquet") # data/exports/, sem sobrescrever
-# stats (média e desvio por estação) desfaz a normalização: y_bruto = expm1(y * std + mean)
+serie, stats = build_model_dataset(SelectionConfig(n_sensors=200), SplitConfig())
+export_dataset(serie, "serie_2010_2025.parquet")   # data/exports/, sem sobrescrever
 ```
 
-Para o caso univariado, use `SelectionConfig(n_sensors=1)`. Para restringir a estações vizinhas, passe `candidates=(...)` com IDs tirados, por exemplo, de `pares_nldi_*_150km.csv`.
+`stats` (média e desvio por estação) desfaz a normalização: `y_bruto = expm1(y * std + mean)`. Para o caso univariado, use `SelectionConfig(n_sensors=1)`. Para restringir a estações vizinhas, passe `candidates=(...)` com IDs tirados, por exemplo, de `pares_nldi_*_150km.csv`.
 
 ### 4. Visualizar uma estação
 
 ```python
-from src.catalog import load_station_selection
 from src.main import build_observation_table
 from src.plots import plot_station_series
 
-stations = load_station_selection()
 observations = build_observation_table()
-fig, ax = plot_station_series(observations, stations["monitoring_location_id"].iloc[0])
+fig, ax = plot_station_series(observations, observations["monitoring_location_id"].iloc[0])
 ```
+
+### Formato antigo
+
+Os arquivos do download antigo (2010–2024, um arquivo por lote) estão em `data/usgs/raw/backup/`. O fluxo atual não os usa. Os leitores desse formato continuam em `src/catalog.py` (`load_station_selection`, `load_cached_daily_observations`), caso seja preciso consultá-los.
 
 ## Tabela de modelagem
 
-`build_model_dataset` devolve uma tabela no formato longo: uma linha por (estação, dia), com o calendário completo de `USGS_DATE_START` a `USGS_DATE_END`. Exemplo ilustrativo da saída:
+`build_model_dataset` devolve uma tabela no formato longo: uma linha por (estação, dia), com o calendário completo do período. Exemplo ilustrativo da saída:
 
 | sensor_id | t | data | split | y_bruto | y | observado | escondido_aval | visivel | aprovacao | qualificador | anomalia |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | USGS-11532500 | 0 | 2010-01-01 | treino | 812.0 | 0.41 | 1 | 0 | 1 | Approved | | 0 |
 | USGS-11532500 | 1 | 2010-01-02 | treino | NaN | NaN | 0 | 0 | 0 | | | 0 |
-| USGS-11532500 | 19 | 2010-01-20 | treino | 2350.0 | 1.37 | 1 | 0 | 1 | Approved | Ice | 1 |
+| USGS-11532500 | 19 | 2010-01-20 | treino | 2350.0 | 1.37 | 1 | 0 | 1 | Approved | ESTIMATED;ICE | 1 |
 | USGS-11532500 | 3339 | 2019-02-22 | validacao | 640.0 | 0.18 | 1 | **1** | 0 | Approved | | 0 |
 | USGS-11532500 | 4657 | 2022-10-02 | teste | 95.3 | −1.22 | 1 | 0 | 1 | Provisional | | 0 |
 | USGS-11530500 | 0 | 2010-01-01 | treino | 1540.0 | 0.33 | 1 | 0 | 1 | Approved | | 0 |
@@ -223,17 +340,19 @@ fig, ax = plot_station_series(observations, stations["monitoring_location_id"].i
 | `escondido_aval` | 1 se o valor existe mas foi escondido dos modelos para medir a reconstrução |
 | `visivel` | 1 se o modelo pode usar o valor (`observado = 1` e `escondido_aval = 0`) |
 | `aprovacao` | status de revisão da USGS: `Approved` (revisado) ou `Provisional` (ainda pode mudar); vazio sem valor |
-| `qualificador` | qualificador original da USGS (ex.: `Ice`, `Equipment`); vazio quando não há; vários são separados por `;` |
-| `anomalia` | 1 se `qualificador` indica problema (Eqp, Ice, Bkw, Mnt, Fld); só para avaliação |
+| `qualificador` | qualificador original da USGS, por extenso e em maiúsculas (ex.: `ICE`, `EQUIP`, `ESTIMATED`); vazio quando não há; vários são separados por `;` |
+| `anomalia` | 1 se `qualificador` indica problema (`EQUIP`, `ICE`, `BACKWATER`, `MAINT…`, `FLOOD`); só para avaliação |
 
 ### Uso de cada split
 
 | Split | Padrão | Uso |
 |---|---|---|
-| `treino` | 60% (2010 → 2018) | ajustar os modelos (ELBO) e as estatísticas de normalização |
-| `validacao` | 15% | objetivo da otimização Bayesiana: NLPD nos pontos escondidos |
-| `calibracao` | 10% | conformal prediction: quantil dos resíduos normalizados nos pontos escondidos |
-| `teste` | 15% (até 2024) | métricas finais, usado uma única vez |
+| `treino` | 60% (2010-01-01 → 2019-08-07) | ajustar os modelos (ELBO) e as estatísticas de normalização |
+| `validacao` | 15% (2019-08-08 → 2021-12-31) | objetivo da otimização Bayesiana: NLPD nos pontos escondidos |
+| `calibracao` | 10% (2022-01-01 → 2023-08-07) | conformal prediction: quantil dos resíduos normalizados nos pontos escondidos |
+| `teste` | 15% (2023-08-08 → 2025-12-31) | métricas finais, usado uma única vez |
+
+As datas valem para o período 2010–2025 com as frações padrão; confira em `split_summary(serie)`.
 
 Regras para os modelos:
 
@@ -244,7 +363,7 @@ Regras para os modelos:
 ### O que entra no treino
 
 - Filtro único para todos: `split == "treino"` e `visivel == 1`.
-- Isso inclui todos os dias de treino com valor, **inclusive os com código de problema** (Eqp, Ice etc.).
+- Isso inclui todos os dias de treino com valor, **inclusive os com código de problema** (`EQUIP`, `ICE` etc.).
 - Ficam de fora só os dias sem valor (NaN). No bloco de treino nada é escondido; a máscara (`escondido_aval`) só existe em `validacao`, `calibracao` e `teste`, com semente fixa (os mesmos dias em toda execução). Para desligá-la: `SplitConfig(hidden_frac=0)`.
 - Nenhum NaN entra nos cálculos dos modelos (o GPyTorch não aceita NaN).
 
@@ -350,13 +469,26 @@ A máscara não ajuda nem atrapalha a detecção: os dias escondidos são sortea
 
 **Dados provisórios:** os anos mais recentes (bloco de teste) ainda não foram revisados pela USGS e podem ter erros sem rótulo. Mostrem as métricas finais separando dados `Approved` e `Provisional`.
 
+### Anomalias fora do treino
+
+Os rótulos de problema são raros e se concentram em poucas estações. Com os dados atuais (200 estações de California, Montana e Minnesota), só 33 estações têm alguma anomalia no teste. Com poucas estações (por exemplo, `n_sensors=10`), é comum a `serie` ficar sem nenhuma anomalia em `validacao`, `calibracao` e `teste`, e as métricas de detecção ficam vazias.
+
+- **O que funciona:** usar mais estações (`n_sensors` alto, até todas as elegíveis) e incluir estados frios, onde o rótulo `ICE` é comum.
+- **O que não fazer:** escolher estações ou a `seed` olhando as anomalias do teste. Isso é vazamento (veja a tabela de riscos abaixo).
+- **Rótulos inconsistentes:** a mesma estação pode ter invernos rotulados com `ICE` em alguns anos e só `ESTIMATED` em outros. Trate a precisão como limite inferior.
+
+A análise completa está em `references/Consideracoes_anomalias.md`.
+
 ## Condições e restrições dos dados
 
 | Condição | Padrão | Onde configurar |
 |---|---|---|
-| Vazão média diária (`00060` / `00003`) | fixo | `.env` / `src/config.py` |
-| Período | 2010-01-01 a 2024-12-31 | `USGS_DATE_START`, `USGS_DATE_END` |
-| Uma série por estação | obrigatório (validado no catálogo) | `src/catalog.py` |
+| Vazão média diária (`00060` / `00003`) | fixo | `DownloadConfig` / `.env` |
+| Período | 2010-01-01 a 2025-12-31 | `DownloadConfig(date_start, date_end)`; `USGS_DATE_START`, `USGS_DATE_END` |
+| Estados baixados | California, Montana, Minnesota | `DownloadConfig(states, use_top_state)` |
+| Só locais do tipo Stream (`ST`) | fixo (exclui canais, valas, lagos, nascentes e riachos de maré) | `src/download.py` |
+| Cobertura do registro no catálogo | toca o período (`overlaps`) | `DownloadConfig.require_full_coverage` |
+| Uma série por estação | `primary` e, no empate, a mais antiga | `src/download.py` (`select_series`) |
 | Completude mínima no treino | ≥ 95% dos dias com valor | `SelectionConfig.min_completeness` |
 | Fração de zeros no treino (exclui rios intermitentes) | ≤ 5% | `SelectionConfig.max_zero_frac` |
 | Vazão negativa | estação descartada | fixo |
@@ -366,9 +498,9 @@ A máscara não ajuda nem atrapalha a detecção: os dias escondidos são sortea
 | Pontos escondidos por bloco fora do treino | 10% | `SplitConfig.hidden_frac` |
 | Tamanho das lacunas escondidas | 1 dia (isolado) | `SplitConfig.hidden_block_len` |
 | Transformação | `log1p` + padronização por estação | `SplitConfig.log_transform` |
-| Códigos que viram `anomalia = 1` | Eqp, Ice, Bkw, Mnt, Fld | `PROBLEM_QUALIFIERS` em `src/model_data.py` |
+| Códigos que viram `anomalia = 1` | `EQUIP`, `ICE`, `BACKWATER`, `MAINT…`, `FLOOD` (e as abreviações Eqp, Ice, Bkw, Mnt, Fld) | `PROBLEM_QUALIFIERS` em `src/model_data.py` |
 
-Antes de usar, confira os textos reais de `qualifier` (`df["qualifier"].value_counts()`) e ajuste `PROBLEM_QUALIFIERS`: a API OGC pode trazer os códigos por extenso (por exemplo, `Ice`).
+A API OGC devolve os qualificadores por extenso e em maiúsculas, juntados por `;` (ex.: `ESTIMATED;ICE`, `EQUIP;ESTIMATED`). `ESTIMATED`, `REVISED`, `FORCEINTERPOLATION`, `RATINGDEV` e outros registros de processamento não viram anomalia. A seção 3.2 do `construcao_bases_modelos.ipynb` lista os qualificadores reais e mostra quais viram anomalia.
 
 ## Pontos de atenção: vazamento de dados e viés
 
@@ -384,8 +516,9 @@ Antes de usar, confira os textos reais de `qualifier` (`df["qualifier"].value_co
 | Janelas atravessando splits (GPLVM) | uma janela mistura dias de treino e teste | montar janelas dentro de cada split |
 | Dados provisórios no teste | os últimos anos costumam ser `Provisional`, com erros ainda não revisados nem rotulados | conferir `split_summary` e reportar o desempenho separando `Approved` e `Provisional` |
 | Rótulos incompletos | há dias problemáticos sem código; cheias reais não têm código | tratar a precisão como limite inferior; inspecionar os maiores escores fora dos dias rotulados |
-| Código `e` (estimado) | o valor já foi corrigido pela USGS, a anomalia pode ter sido apagada | não entra em `anomalia`; analisar à parte se necessário |
-| `Ice` sazonal | gelo se repete todo inverno e pode ser aprendido como normal | analisar o recall por código; estações frias concentram esse rótulo |
+| Código `ESTIMATED` | o valor já foi corrigido pela USGS, a anomalia pode ter sido apagada | não entra em `anomalia`; analisar à parte se necessário |
+| `ICE` sazonal | gelo se repete todo inverno e pode ser aprendido como normal | analisar o recall por código; estações frias concentram esse rótulo |
+| Escolha de estações pelas anomalias | selecionar estações ou `seed` porque têm anomalias no teste | aumentar `n_sensors` ou incluir estados sem olhar os rótulos (veja [Anomalias fora do treino](#anomalias-fora-do-treino)) |
 | Conformal em série temporal | o split conformal supõe dados trocáveis, o que não vale no tempo | calibração colada ao teste; citar o conformal adaptativo (ACI) como alternativa |
 | Mudança ao longo dos anos | regulação, clima ou troca de equipamento alteram a série | comparar as métricas entre validação e teste; declarar como limitação |
 
@@ -395,8 +528,9 @@ Os dados atuais refletem a configuração padrão do projeto:
 
 - parâmetro: `00060` (discharge)
 - estatística: `00003` (média diária)
-- janela temporal: `2010-01-01` a `2024-12-31`
-- unidade de vazão nos dados crus: ft³/s, com conversão local para m³/s em alguns fluxos analíticos
+- janela temporal: `2010-01-01` a `2025-12-31`
+- estados: California (1.002 séries), Montana (263) e Minnesota (139), 1.404 séries ao todo; 4 delas não têm dados no período
+- unidade de vazão nos dados crus: ft³/s, com conversão local para m³/s em alguns fluxos analíticos (`df_full`)
 
 Há também arquivos e metadados relativos a séries contínuas e pares de estações, o que sugere uma comparação em andamento entre dados diários e observações de maior frequência. O projeto não assume automaticamente que toda série contínua tenha intervalo de 15 minutos; por isso, a frequência efetiva deve ser validada conforme a estação e o conjunto de dados.
 
@@ -427,7 +561,7 @@ Até o momento, o repositório não inclui uma suíte de testes automatizados fo
 
 Este projeto é um ambiente de preparação e análise hidrológica local, com foco em dados de vazão e seleção de estações monitoradas pela USGS. A estrutura atual reflete um trabalho ativo em exploração e processamento, sem um modelo de previsão implementado como etapa final.
 
-Para acompanhar o desenvolvimento, o ponto de entrada mais útil continua sendo a combinação entre os notebooks e os módulos em `src/`, especialmente quando novos arquivos de dados forem adicionados em `data/usgs/`.
+Para acompanhar o desenvolvimento, o ponto de entrada mais útil é a sequência `download.ipynb` → `construcao_bases_modelos.ipynb`, junto com os módulos em `src/`.
 
 ## Referências da USGS
 

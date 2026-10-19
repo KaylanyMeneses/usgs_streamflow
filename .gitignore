@@ -3,6 +3,9 @@
 __pycache__/
 .ipynb_checkpoints/
 
+# Ignora pastas backup
+backup/
+
 # Ignora arquivos .ini windows
 desktop.ini
 Desktop.ini

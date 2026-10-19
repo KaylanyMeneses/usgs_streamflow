@@ -1,4 +1,9 @@
-"""Load the station selection and local daily USGS Parquet caches."""
+"""Load and index local data files.
+
+load_station_selection and load_cached_daily_observations read the old layout (stations_full.parquet
+and one Parquet per download batch in data/usgs/raw/). The current layout, one Parquet per series
+under data/usgs/raw/parquets/, is read by src/download.py (load_selected, load_daily).
+"""
 
 from pathlib import Path
 from collections.abc import Iterable
@@ -51,7 +56,7 @@ def load_dataset(path: str | Path) -> pd.DataFrame:
 
 
 def load_station_selection(path: Path | None = None) -> pd.DataFrame:
-    """Load and validate the processed table that defines selected stations."""
+    """Load and validate stations_full.parquet (old layout; see src/download.load_selected)."""
     source = path or PROCESSED_ROOT / "stations_full.parquet"
     stations = load_dataset(source)
     required = {"time_series_id", "monitoring_location_id"}
@@ -87,7 +92,7 @@ def load_cached_daily_observations(
     series_ids: Iterable[str],
     config: USGSConfig = USGS,
 ) -> pd.DataFrame:
-    """Read matching daily cache rows for the chosen series, without API requests."""
+    """Read old per-batch daily caches in data/usgs/raw/ (old layout; see src/download.load_daily)."""
     requested = {str(series_id) for series_id in series_ids}
     if not requested:
         raise ValueError("A seleção de time_series_id está vazia.")

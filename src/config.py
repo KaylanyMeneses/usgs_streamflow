@@ -23,7 +23,7 @@ class USGSConfig:
 
     api_version: str = os.getenv("USGS_API_VERSION", "v0")
     date_start: str = os.getenv("USGS_DATE_START", "2010-01-01")
-    date_end: str = os.getenv("USGS_DATE_END", "2024-12-31")
+    date_end: str = os.getenv("USGS_DATE_END", "2025-12-31")
     parameter_code: str = os.getenv("USGS_PARAMETER_CODE", "00060")
     statistic_id: str = os.getenv("USGS_STATISTIC_ID", "00003")
     api_key: str | None = os.getenv("USGS_API_KEY")
