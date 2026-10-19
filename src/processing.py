@@ -2,6 +2,8 @@
 
 import pandas as pd
 
+from .config import USGS
+
 
 def make_station_observation_table(
     observations: pd.DataFrame,
@@ -32,7 +34,8 @@ def make_station_observation_table(
             "a tabela de três colunas ficaria ambígua."
         )
 
-    data = observations.loc[:, ["time_series_id", "date", "value_cfs"]].copy()
+    extra = [c for c in ("approval_status", "qualifier") if c in observations.columns]
+    data = observations.loc[:, ["time_series_id", "date", "value_cfs", *extra]].copy()
     data["time_series_id"] = data["time_series_id"].astype("string")
     station_map["time_series_id"] = station_map["time_series_id"].astype("string")
     data["date"] = pd.to_datetime(data["date"], errors="coerce").dt.normalize()
@@ -46,9 +49,8 @@ def make_station_observation_table(
         on="time_series_id",
         validate="many_to_one",
     )
-    data = data.rename(columns={"monitoring_location_id": "monitoring_location_id"})
     data = data.loc[
-        :, ["date", "value_cfs", "monitoring_location_id"]
+        :, ["date", "value_cfs", "monitoring_location_id", *extra]
     ].sort_values(["monitoring_location_id", "date"], ignore_index=True)
 
     if data.duplicated(["monitoring_location_id", "date"]).any():
@@ -75,13 +77,15 @@ def summarize_station_observations(table: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
-### Imputando valores "Nan"
 def complete_daily_calendar(
     table: pd.DataFrame,
-    start: str = "2010-01-01",
-    end: str = "2024-12-31",
+    start: str = USGS.date_start,
+    end: str = USGS.date_end,
 ) -> pd.DataFrame:
-    """Return one row per station and calendar day; missing days get NaN discharge."""
+    """Return one row per station and calendar day; missing days get NaN discharge.
+
+    No imputation happens here: every column of ``table`` is kept, and new days are NaN.
+    """
     required = {"monitoring_location_id", "date", "value_cfs"}
     missing = required.difference(table.columns)
     if missing:
@@ -96,8 +100,6 @@ def complete_daily_calendar(
         table.set_index(["monitoring_location_id", "date"])
         .reindex(full_index)
         .reset_index()
-        .loc[:, ["date", "value_cfs", "monitoring_location_id"]]
     )
     out["monitoring_location_id"] = out["monitoring_location_id"].astype("category")
-    
     return out

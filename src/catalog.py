@@ -9,6 +9,7 @@ from .config import DATA_ROOT, EXPORT_ROOT, PROCESSED_ROOT, PROJECT_ROOT, RAW_RO
 
 
 DAILY_CACHE_COLUMNS = ("time_series_id", "date", "value_cfs")
+OPTIONAL_DAILY_COLUMNS = ("approval_status", "qualifier")  # quality codes kept when present
 
 
 def build_dataset_index(data_root: Path = DATA_ROOT) -> pd.DataFrame:
@@ -105,7 +106,8 @@ def load_cached_daily_observations(
         missing = required.difference(frame.columns)
         if missing:
             raise ValueError(f"Cache {path.name} sem colunas necessárias: {sorted(missing)}")
-        frame = frame.loc[:, list(DAILY_CACHE_COLUMNS)].copy()
+        extra = [c for c in OPTIONAL_DAILY_COLUMNS if c in frame.columns]
+        frame = frame.loc[:, [*DAILY_CACHE_COLUMNS, *extra]].copy()
         frame["time_series_id"] = frame["time_series_id"].astype("string")
         frame = frame.loc[frame["time_series_id"].isin(requested)].copy()
         if frame.empty:

@@ -9,7 +9,12 @@ from .catalog import (
     load_dataset,
     load_station_selection,
 )
-from .processing import make_station_observation_table, summarize_station_observations
+from .model_data import SelectionConfig, SplitConfig, prepare_model_dataset
+from .processing import (
+    complete_daily_calendar,
+    make_station_observation_table,
+    summarize_station_observations,
+)
 
 
 def build_observation_table() -> pd.DataFrame:
@@ -25,8 +30,20 @@ def build_analysis_dataset() -> tuple[pd.DataFrame, pd.DataFrame]:
     return table, summarize_station_observations(table)
 
 
+def build_model_dataset(
+    selection: SelectionConfig = SelectionConfig(),
+    splits: SplitConfig = SplitConfig(),
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return the shared modeling table (see README) and per-station normalization stats."""
+    full = complete_daily_calendar(build_observation_table())
+    return prepare_model_dataset(full, selection, splits)
+
+
 __all__ = [
+    "SelectionConfig",
+    "SplitConfig",
     "build_analysis_dataset",
+    "build_model_dataset",
     "build_dataset_index",
     "build_observation_table",
     "export_dataset",
