@@ -7,3 +7,6 @@ __pycache__/
 desktop.ini
 Desktop.ini
 thumbs.db
+
+# Ignora VSCODE
+**/.vscode/

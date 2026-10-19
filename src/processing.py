@@ -75,3 +75,29 @@ def summarize_station_observations(table: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index()
     )
+### Imputando valores "Nan"
+def complete_daily_calendar(
+    table: pd.DataFrame,
+    start: str = "2010-01-01",
+    end: str = "2024-12-31",
+) -> pd.DataFrame:
+    """Return one row per station and calendar day; missing days get NaN discharge."""
+    required = {"monitoring_location_id", "date", "value_cfs"}
+    missing = required.difference(table.columns)
+    if missing:
+        raise ValueError(f"Tabela sem colunas necessárias: {sorted(missing)}")
+
+    calendar = pd.date_range(start, end, freq="D", name="date")
+    stations = table["monitoring_location_id"].unique()
+    full_index = pd.MultiIndex.from_product(
+        [stations, calendar], names=["monitoring_location_id", "date"]
+    )
+    out = (
+        table.set_index(["monitoring_location_id", "date"])
+        .reindex(full_index)
+        .reset_index()
+        .loc[:, ["date", "value_cfs", "monitoring_location_id"]]
+    )
+    out["monitoring_location_id"] = out["monitoring_location_id"].astype("category")
+    
+    return out
