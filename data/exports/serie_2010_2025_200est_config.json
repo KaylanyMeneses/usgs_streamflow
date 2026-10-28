@@ -1,0 +1,27 @@
+{
+  "selecao": {
+    "n_sensors": 200,
+    "min_completeness": 0.95,
+    "max_zero_frac": 0.05,
+    "candidates": null,
+    "seed": 42
+  },
+  "splits": {
+    "fracs": [
+      0.6,
+      0.15,
+      0.1,
+      0.15
+    ],
+    "hidden_frac": 0.1,
+    "hidden_block_len": 1,
+    "log_transform": true,
+    "seed": 42
+  },
+  "periodo": [
+    "2010-01-01",
+    "2025-12-31"
+  ],
+  "parametro": "00060",
+  "estatistica": "00003"
+}

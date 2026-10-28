@@ -400,7 +400,7 @@ def load_selected(cfg: DownloadConfig) -> pd.DataFrame:
     """Lista de séries escolhidas pelo run_pipeline (<stem>_selected.csv)."""
     path = Path(cfg.out_dir) / f"{cfg.stem}_selected.csv"
     if not path.exists():
-        raise FileNotFoundError(f"Seleção não encontrada: {path}. Rode o download.ipynb (run_pipeline) "
+        raise FileNotFoundError(f"Seleção não encontrada: {path}. Rode o 01_download.ipynb (run_pipeline) "
                                 "com o mesmo período, parâmetro e estatística.")
     return pd.read_csv(path, dtype={"time_series_id": str, "monitoring_location_id": str})
 

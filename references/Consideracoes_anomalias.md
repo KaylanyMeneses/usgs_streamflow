@@ -51,7 +51,7 @@ Mesmo com `min_completeness=0.80` e `max_zero_frac=0.20`, ficam 536 elegíveis e
 
 São dois lugares: **os estados ficam no download**, e **os filtros de estação ficam na construção da base**.
 
-### 1. Estados: `download.ipynb`, Célula 2 (`DownloadConfig`)
+### 1. Estados: `01_download.ipynb`, Célula 2 (`DownloadConfig`)
 
 ```python
 cfg = DownloadConfig(
@@ -71,11 +71,11 @@ selected, summary = run_pipeline(cfg)
 - **`use_top_state=False` é essencial.** Com `True`, o código continua reduzindo a seleção ao estado com mais estações, mesmo com `states` preenchido ([src/download.py](src/download.py), `select_series`).
 - **Nomes dos estados:** use os nomes por extenso que aparecem na tabela de estados por número de estações, aquela que você salvou em `data/usgs/raw/states_daily_discharge_counts.parquet`.
 - **O que é reaproveitado:** as séries da Califórnia que já estão em disco não são baixadas de novo. Só as dos estados novos são baixadas.
-- **Lista de seleção:** o arquivo `daily_..._selected.csv` é substituído pela lista nova, com todos os estados. O `construcao_bases_modelos.ipynb` lê esse arquivo e passa a enxergar os novos estados automaticamente.
+- **Lista de seleção:** o arquivo `daily_..._selected.csv` é substituído pela lista nova, com todos os estados. O `03_guia_bases_modelos.ipynb` lê esse arquivo e passa a enxergar os novos estados automaticamente.
 - **Tempo de download:** cada estado grande tem perto de 1.000 estações, ou cerca de 125 lotes.
 - **`require_full_coverage`:** é um filtro de cobertura aplicado já no download. Com `True`, só entram as séries cujo registro cobre 2010–2025 inteiro.
 
-### 2. Filtros de estação: `construcao_bases_modelos.ipynb`, Célula 5 (seção 3.1)
+### 2. Filtros de estação: `03_guia_bases_modelos.ipynb`, Célula 5 (seção 3.1)
 
 ```python
 SELECAO = SelectionConfig(
@@ -91,7 +91,7 @@ Esses filtros são calculados só no bloco de treino. Eles são definidos em `Se
 
 Se `n_sensors` passar do número de estações que atendem aos filtros, aparece o erro `Só N estações passam nos filtros; pedido: M`. Esse N é o máximo que você pode pedir.
 
-**Ordem para rodar:** primeiro o `download.ipynb` com os estados novos, até `summary["pending"]` zerar. Depois o `construcao_bases_modelos.ipynb` desde o início, com o kernel reiniciado.
+**Ordem para rodar:** primeiro o `01_download.ipynb` com os estados novos, até `summary["pending"]` zerar. Depois o `03_guia_bases_modelos.ipynb` desde o início, com o kernel reiniciado.
 
 ---
 

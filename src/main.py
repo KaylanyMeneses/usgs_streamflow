@@ -35,7 +35,7 @@ def build_observation_table(config: DownloadConfig | None = None) -> pd.DataFram
     stations = load_selected(cfg)
     observations = load_daily(cfg, stations["time_series_id"])
     if observations.empty:
-        raise FileNotFoundError(f"Nenhuma série baixada em {cfg.series_dir}. Rode o download.ipynb.")
+        raise FileNotFoundError(f"Nenhuma série baixada em {cfg.series_dir}. Rode o 01_download.ipynb.")
     return make_station_observation_table(observations, stations)
 
 
