@@ -16,7 +16,7 @@ O projeto está em fase de preparação e análise exploratória de dados. Ele j
 
 Os dados atuais cobrem **2010-01-01 a 2025-12-31** em três estados (California, Montana e Minnesota). A ordem dos notebooks está em [Ordem dos notebooks](#ordem-dos-notebooks), e o passo a passo para baixar os dados e montar a base está em [Do download à base dos modelos](#do-download-à-base-dos-modelos).
 
-Os modelos (GP Student‑t, RGP‑t e Bayesian GPLVM) ainda não estão implementados; eles consomem a tabela descrita em [Tabela de modelagem](#tabela-de-modelagem).
+Os notebooks de entrada `04`–`06` preparam os dados, mas não ajustam os modelos. O Modelo 3 tem uma implementação de referência em `notebooks/modelo3_bayesian_gplvm.ipynb` e `src/gplvm_anomaly.py`; os Modelos 1 e 2 ainda estão pendentes.
 
 ## Estrutura do repositório
 
@@ -68,6 +68,7 @@ usgs_streamflow/
 │   ├── 04_entradas_modelo1_gp.ipynb       (gera e salva a entrada do Modelo 1)
 │   ├── 05_entradas_modelo2_rgp.ipynb      (gera e salva a entrada do Modelo 2)
 │   ├── 06_entradas_modelo3_gplvm.ipynb    (gera e salva a entrada do Modelo 3)
+│   ├── modelo3_bayesian_gplvm.ipynb      (treina, prevê e avalia o Modelo 3)
 │   ├── análise_seleção.ipynb              (exploração, fora da sequência)
 │   └── usgs_streamflow.ipynb              (exploração da API, fora da sequência)
 ├── references/
@@ -84,6 +85,7 @@ usgs_streamflow/
 │   ├── download.py
 │   ├── main.py
 │   ├── evaluation.py
+│   ├── gplvm_anomaly.py
 │   ├── model_data.py
 │   ├── model_inputs.py
 │   ├── plots.py
@@ -113,6 +115,7 @@ Os notebooks numerados formam a sequência do trabalho (veja [Ordem dos notebook
 - `notebooks/04_entradas_modelo1_gp.ipynb`: lê a `serie` salva, escolhe a estação do caso local e gera e salva a entrada do Modelo 1 (GP Student‑t) em `data/exports/<NOME>/modelo1_gp/`. Não ajusta o modelo;
 - `notebooks/05_entradas_modelo2_rgp.ipynb`: o mesmo para o Modelo 2 (RGP‑t), em `.../modelo2_rgp/`;
 - `notebooks/06_entradas_modelo3_gplvm.ipynb`: o mesmo para o Modelo 3 (Bayesian GPLVM), com as janelas, em `.../modelo3_gplvm/`;
+- `notebooks/modelo3_bayesian_gplvm.ipynb`: seleciona hiperparâmetros com Optuna na validação, treina o Bayesian GPLVM usando a `serie` do `02` e as janelas exportadas pelo `06`, e avalia reconstrução, baseline climatológico, conformal e escores ELBO/LOO sem consultar a API;
 - `notebooks/usgs_streamflow.ipynb`: notebook original de consulta à API, com a exploração do esquema e do catálogo. A lógica de download dele foi levada para `src/download.py`; continua útil para explorar a API;
 - `notebooks/análise_seleção.ipynb`: notebook de análise local com base nos arquivos já presentes em `data/`, sem depender de nova chamada à API.
 
@@ -122,7 +125,7 @@ Nenhum notebook a partir do `02` consulta a API.
 
 A pasta `references/` guarda os documentos de planejamento do trabalho de modelagem. Eles não são lidos pelo código: servem como especificação de onde vieram as decisões implementadas em `src/model_data.py`, `src/model_inputs.py` e `src/evaluation.py`, e como guia comum para quem implementa cada modelo.
 
-- `Relatório técnico GPs para séries com faltantes e anomalias.md`: descreve o problema (faltantes, sazonalidade, picos anômalos e dependência temporal), os três modelos (GP Student‑t, RGP‑t e Bayesian GPLVM), a divisão do trabalho por pessoa, a implementação prevista com GPyTorch/BoTorch e as ressalvas a declarar;
+- `Relatório técnico GPs para séries com faltantes e anomalias.md`: descreve o problema (faltantes, sazonalidade, picos anômalos e dependência temporal), os três modelos (GP Student‑t, RGP‑t e Bayesian GPLVM), a divisão do trabalho e diferencia o plano original com BoTorch da implementação atual do GPLVM com Optuna e janela semanal fixa;
 - `Formato dos dados caso univariado e multivariado.md`: define o formato da base comum e da saída dos modelos nos casos univariado e multivariado, como cada modelo lê os dados, os rótulos de anomalia a partir dos códigos de qualidade e o que entra no treino e na avaliação;
 - `Consideracoes_anomalias.md`: análise de por que poucas estações têm anomalias rotuladas fora do treino, as opções para contornar isso (mais estações, `candidates`, teste maior) com os riscos de vazamento de cada uma, e onde mudar estados e filtros.
 
@@ -139,6 +142,7 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 - `src/model_inputs.py`: converte a tabela na entrada de cada modelo (`gp_inputs`, `rgp_inputs`, `gplvm_inputs`), sem NaN;
 - `src/model_exports.py`: salva e lê a entrada de cada modelo em Parquet, em `data/exports/<NOME>/<modelo>/` (`gp_table`, `rgp_table`, `gplvm_table`, `save_inputs`, `load_inputs`), e a converte de volta nos arrays (`gp_arrays`, `rgp_arrays`, `gplvm_arrays`, que devolvem o mesmo que as funções de `src/model_inputs.py`). `gp_global_arrays` monta a entrada do GP com várias estações juntas (`X = [t, índice da estação]`), para um GP global;
 - `src/evaluation.py`: confere o formato da saída dos modelos e calcula as métricas de reconstrução, conformal e detecção de anomalias;
+- `src/gplvm_anomaly.py`: treino e inferência do Bayesian GPLVM, previsão Student-t e escore pontual leave-one-day-out;
 - `src/plots.py`: gera gráficos de série temporal por estação;
 - `src/main.py`: a partir dos arquivos gerados pelo download, monta a tabela de observações (`build_observation_table`), o resumo por estação (`build_analysis_dataset`) e a tabela de modelagem (`build_model_dataset`). Por padrão, usa o período, o parâmetro e a estatística de `src/config.py` (`.env`); para outros valores, passe `config=DownloadConfig(...)`.
 
@@ -148,7 +152,7 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 01_download  →  02_serie_modelos  →  03_guia_bases_modelos
                                   →  04_entradas_modelo1_gp     →  07_modelo1_gp     (futuro)
                                   →  05_entradas_modelo2_rgp    →  08_modelo2_rgp    (futuro)
-                                  →  06_entradas_modelo3_gplvm  →  09_modelo3_gplvm  (futuro)
+                                  →  06_entradas_modelo3_gplvm  →  modelo3_bayesian_gplvm
 ```
 
 | Ordem | Notebook | Entrada | Saída | Quando rodar |
@@ -157,9 +161,10 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 | 2 | `02_serie_modelos.ipynb` | arquivos do `01` | `serie`, `stats` e `config` em `data/exports/` | uma vez por configuração da base; ao mudar `SelectionConfig` ou `SplitConfig`, troque `NOME` |
 | 3 | `03_guia_bases_modelos.ipynb` | `serie` salva pelo `02` | nada (guia) | para consultar como montar entradas, saídas e métricas |
 | 4–6 | `04_entradas_modelo1_gp.ipynb`, `05_entradas_modelo2_rgp.ipynb`, `06_entradas_modelo3_gplvm.ipynb` | `serie` salva pelo `02` | entrada de cada modelo em `data/exports/<NOME>/<modelo>/` (Parquet + `config.json`) | uma vez por base, depois do `02`; independentes entre si |
-| 7–9 | notebooks dos modelos (futuros) | entrada salva pelo `04`, `05` ou `06` | previsões, escores e métricas | ao ajustar cada modelo |
+| Modelo 3 | `modelo3_bayesian_gplvm.ipynb` | `serie` do `02` e janelas do `06` | previsões, escores LOO, métricas e intervalos conformais | ao treinar/avaliar o GPLVM |
+| Modelos 1–2 | notebooks dos modelos (futuros) | entrada salva pelo `04` ou `05` | previsões, escores e métricas | quando implementados |
 
-Os notebooks `04`–`06` **só preparam os dados**: não ajustam nenhum modelo. O ajuste, a previsão e as métricas ficam nos notebooks dos modelos (`07`–`09`), que só leem a entrada salva.
+Os notebooks `04`–`06` **só preparam os dados**: não ajustam nenhum modelo. O notebook do Modelo 3 lê a base e a entrada exportadas, sem baixar dados ou remontar janelas.
 
 **Por que a `serie` tem um notebook só para ela:** os três modelos precisam ser avaliados nas mesmas estações, nos mesmos dias escondidos e com a mesma normalização. Os dias escondidos mudam se a `serie` for montada de novo com outra seleção de estações (veja [Uma `serie` para todos os modelos](#uma-serie-para-todos-os-modelos)). Por isso ela é montada e salva uma única vez no `02`, e todos os outros notebooks só leem o arquivo, com o mesmo `NOME`. O `02` guarda as configurações num `_config.json` ao lado da tabela e para com erro se alguém tentar gravar outra configuração com o mesmo `NOME`.
 
@@ -327,9 +332,9 @@ Os arquivos ficam em `data/exports/<NOME>/`, ao lado de um `config.json` com as 
 
 O `03_guia_bases_modelos.ipynb` mostra as três funções em uso, o formato da saída e as métricas. Os detalhes de cada uma estão em [Como cada modelo lê a tabela](#como-cada-modelo-lê-a-tabela).
 
-### Passo 4: ler a entrada nos notebooks dos modelos (`07`–`09`, futuros)
+### Passo 4: treinar e avaliar os modelos
 
-Os notebooks dos modelos não montam nada: leem a entrada salva e a convertem nos arrays. As funções `gp_arrays`, `rgp_arrays` e `gplvm_arrays` devolvem exatamente o mesmo que `gp_inputs`, `rgp_inputs` e `gplvm_inputs`:
+Os notebooks de modelo não remontam as entradas: leem os arquivos exportados e os convertem nos arrays. O `modelo3_bayesian_gplvm.ipynb` usa a `serie` salva pelo `02` e as janelas do `06`; ele avalia previsão/reconstrução, intervalos conformais e detecção LOO. As funções `gp_arrays`, `rgp_arrays` e `gplvm_arrays` devolvem exatamente o mesmo que `gp_inputs`, `rgp_inputs` e `gplvm_inputs`:
 
 ```python
 from src.model_exports import load_inputs, gp_arrays, gp_global_arrays, rgp_arrays, gplvm_arrays
@@ -593,7 +598,7 @@ Os três modelos entregam a mesma tabela, uma linha por (estação, dia):
 | USGS-11532500 | 2023-01-12 | teste | 0.47 | −0.25 | 1.20 | NaN | |
 
 - `media`, `q025`, `q975`: previsão e intervalo de 95% na escala de `y` (use `stats` para voltar a ft³/s).
-- `escore`: quanto maior, mais anômalo. Modelos 1 e 2: 1/E[τ] (nos dias de validação e teste, a mesma fórmula aplicada à previsão do modelo). Modelo 3: −ELBO da janela, repetido em cada dia dela. É NaN nos dias sem valor visível.
+- `escore`: quanto maior, mais anômalo. Modelos 1 e 2: 1/E[τ] (nos dias de validação e teste, a mesma fórmula aplicada à previsão do modelo). Modelo 3: −ELBO da janela, repetido em cada dia dela; o notebook também exporta `escore_loo` como análise adicional por dia. Escores podem ser NaN quando não há previsão.
 - `alerta`: 1 se o escore passa de um limiar definido na `calibracao` (ex.: percentil 99, ou via conformal), nunca no teste.
 
 ### Duas avaliações separadas
@@ -714,6 +719,9 @@ O arquivo `requirements.txt` inclui:
 - statsmodels
 - python-dotenv
 - ipykernel
+- torch
+- gpytorch
+- optuna
 
 ## Validação e qualidade
 
@@ -726,9 +734,9 @@ Até o momento, o repositório não inclui uma suíte de testes automatizados fo
 
 ## Observações finais
 
-Este projeto é um ambiente de preparação e análise hidrológica local, com foco em dados de vazão e seleção de estações monitoradas pela USGS. A estrutura atual reflete um trabalho ativo em exploração e processamento, sem um modelo de previsão implementado como etapa final.
+Este projeto é um ambiente de preparação e análise hidrológica local, com foco em dados de vazão e seleção de estações monitoradas pela USGS. O fluxo de preparação é compartilhado pelos modelos; o Bayesian GPLVM tem uma implementação de referência para previsão/reconstrução e detecção, ainda sujeita a validação e comparação com os outros modelos.
 
-Para acompanhar o desenvolvimento, o ponto de entrada mais útil é a sequência de notebooks numerados (`01_download.ipynb` → `02_serie_modelos.ipynb` → `03_guia_bases_modelos.ipynb` → `04`–`06`, as entradas de cada modelo), junto com os módulos em `src/`.
+Para reproduzir o GPLVM, siga `01_download.ipynb` → `02_serie_modelos.ipynb` → `06_entradas_modelo3_gplvm.ipynb` → `modelo3_bayesian_gplvm.ipynb`, junto com os módulos em `src/`.
 
 ## Referências da USGS
 

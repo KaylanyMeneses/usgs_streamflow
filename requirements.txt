@@ -7,3 +7,6 @@ scipy
 statsmodels
 python-dotenv
 ipykernel
+torch
+gpytorch
+optuna

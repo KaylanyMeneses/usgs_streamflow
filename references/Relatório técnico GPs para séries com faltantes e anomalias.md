@@ -21,11 +21,11 @@ Cada modelo fica com uma pessoa: o GP Student‑t trata os três problemas diret
 | --- | --- | --- | --- | --- |
 | 1. GP com verossimilhança Student‑t e kernel Periódico × RBF + RBF | Sim: o instante faltante vira ponto de predição, com incerteza | Sim: kernel periódico; RBF longo para a tendência | Sim: cauda pesada ignora os picos; E\[τ\_i\] pequeno marca outlier | Núcleo: regressão probabilística e reconstrução |
 | 2. RGP‑t (GP recorrente robusto) | Parcial: só os y observados entram no ELBO; os estados latentes cobrem todos os instantes | Indireta, pela dinâmica aprendida | Sim: mesma Student‑t com τ\_i | Modelo dinâmico: dinâmica não linear |
-| 3. Bayesian GPLVM em janelas | Sim: dimensões ausentes saem da verossimilhança | Sim, se cada janela for um ciclo sazonal | Sim: janela com baixa densidade é candidata | Estimação de densidade (versão não linear do PPCA) |
+| 3. Bayesian GPLVM em janelas | Sim: dimensões ausentes saem da verossimilhança | Não na configuração semanal atual; 7 dias são contexto local, não um ciclo anual | Sim: baixa densidade da janela ou do dia LOO é candidata | Estimação de densidade (versão não linear do PPCA) |
 
 Todos geram distribuições a posteriori aproximadas (variacionais) e intervalos de previsão. Os hiperparâmetros ficam como estimativas pontuais, otimizadas pela evidência.
 
-A otimização Bayesiana (BoTorch) entra para escolher o que não é diferenciável: tamanho da janela, dimensão latente Q, número de pontos de indução M e graus de liberdade ν.
+O plano original previa otimização Bayesiana (BoTorch) do tamanho da janela, dimensão latente Q, número de pontos de indução M e graus de liberdade ν. Na implementação atual do GPLVM, Optuna escolhe Q, M, ν e taxa de aprendizado pela NLPD em valores escondidos da validação; a janela permanece fixa conforme o artefato do `06` e exige regeneração para ser comparada. O tamanho semanal é uma escolha prática de contexto, sem alegação de capturar sazonalidade anual.
 
 ## Como estamos pensando em fazer
 
@@ -47,7 +47,7 @@ Cada pessoa fica com um modelo. Dados, avaliação, a função Student‑t e a o
 | --- | --- | --- | --- | --- |
 | Pessoa 1 | GP Student‑t | Modelo 1, baseline Gaussiano e a função `student_t_elbo_terms` usada também pela Pessoa 2 | Baixa; por isso lidera a base comum | — |
 | Pessoa 2 | RGP‑t | RNN de reconhecimento, camadas `DeepGPLayer`, ELBO completo; validar primeiro em dado sintético sem faltantes | Alta; começa assim que a função Student‑t estiver pronta | GP‑NARX com Student‑t (defasagens como entrada) |
-| Pessoa 3 | Bayesian GPLVM em janelas | Janelas, máscara no ELBO, escore por janela; otimização Bayesiana (BoTorch) para os três modelos | Média | PPCA via EM com faltantes |
+| Pessoa 3 | Bayesian GPLVM em janelas | Janelas, máscara no ELBO, escore por janela; no GPLVM atual, Optuna seleciona Q, M, ν e taxa de aprendizado na validação (janela fixa pelo `06`) | Média | PPCA via EM com faltantes |
 
 ### Marcos
 
@@ -68,7 +68,7 @@ Tudo roda sobre GPyTorch; o que não existe pronto é código de "cola" em PyTor
 | GPLVM | `BayesianGPLVM`, `VariationalLatentVariable` | Máscara de faltantes na verossimilhança |
 | RGP‑t: camadas de transição | `DeepGPLayer` | — |
 | RGP‑t: estados latentes, defasagens, propagação | — | RNN de reconhecimento (`torch.nn.GRU`), indexação, amostragem Monte Carlo |
-| Otimização Bayesiana | BoTorch (construído sobre GPyTorch) | — |
+| Otimização Bayesiana | Optuna no notebook GPLVM atual; BoTorch era o plano original | — |
 
 ### Modelo 1: GP esparso com kernel sazonal
 
@@ -127,7 +127,7 @@ def make_windows(x, period):
     return Y[keep], mask[keep]
 ```
 
-O GPLVM segue o tutorial de `BayesianGPLVM` do GPyTorch. A única mudança é multiplicar a log‑verossimilhança esperada por ponto pela máscara antes da soma no ELBO, com os NaN trocados por 0. O escore de anomalia por janela é o −ELBO da janela.
+O GPLVM segue o tutorial de `BayesianGPLVM` do GPyTorch. A log‑verossimilhança esperada por ponto é multiplicada pela máscara antes da soma no ELBO, com os NaN trocados por 0. Para manter a saída comum, o escore da janela é −ELBO, repetido em seus dias; o notebook também calcula `escore_loo` como análise adicional por dia.
 
 ### Modelo 2: RGP‑t
 
