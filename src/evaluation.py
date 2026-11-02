@@ -1,8 +1,10 @@
-"""Shared evaluation: model output format, reconstruction metrics and anomaly detection metrics.
+"""Shared evaluation: model output format, reconstruction, forecast and anomaly detection metrics.
 
-Every model returns one row per (sensor_id, t) with the columns in OUTPUT_COLUMNS
-(values in the ``y`` scale). Metrics are computed only on the requested split
-(normally ``teste``); thresholds and conformal factors come from ``calibracao``.
+Reconstruction and detection: every model returns one row per (sensor_id, t) with the columns in
+OUTPUT_COLUMNS (values in the ``y`` scale). Forecast: one row per (sensor_id, origem, h) with the
+columns in src.forecast.FORECAST_COLUMNS, compared with the targets of src.forecast.forecast_targets.
+Metrics are computed only on the requested split (normally ``teste``); thresholds and conformal
+factors come from ``calibracao``.
 """
 
 import numpy as np
@@ -51,6 +53,10 @@ def reconstruction_metrics(serie, out, split="teste", stats=None, alpha=0.05) ->
     else:
         y = d["y_bruto"]
         mu, lo, hi = (to_cfs(d[c], d["sensor_id"], stats) for c in ("media", "q025", "q975"))
+    return _interval_metrics(d, y, mu, lo, hi, alpha)
+
+
+def _interval_metrics(d, y, mu, lo, hi, alpha) -> pd.Series:
     err = y - mu
     width = hi - lo
     penalty = (2 / alpha) * ((lo - y).clip(lower=0) + (y - hi).clip(lower=0))
@@ -89,7 +95,68 @@ def apply_conformal(out: pd.DataFrame, factor: float) -> pd.DataFrame:
     return out
 
 
+# ---------------------------------------------------------------- forecast
+def _join_forecast(targets: pd.DataFrame, out: pd.DataFrame) -> pd.DataFrame:
+    from .forecast import check_forecast_output
+    return targets.merge(check_forecast_output(out).drop(columns=["t"], errors="ignore"),
+                         on=["sensor_id", "origem", "h"], how="left", validate="one_to_one")
+
+
+def forecast_metrics(targets, out, split="teste", stats=None, alpha=0.05) -> pd.DataFrame:
+    """Forecast errors per horizon (one row per h) on the evaluated targets (avaliar = 1).
+
+    Same metrics as reconstruction_metrics; with ``stats`` the errors are in ft3/s.
+    """
+    d = _join_forecast(targets, out)
+    d = d[(d["split"] == split) & (d["avaliar"] == 1)].dropna(subset=["media"])
+    if d.empty:
+        raise ValueError(f"Não há alvos de forecast com previsão no split {split!r}.")
+    rows = {}
+    for h, g in d.groupby("h"):
+        if stats is None:
+            y, mu, lo, hi = g["y"], g["media"], g["q025"], g["q975"]
+        else:
+            y = g["y_bruto"]
+            mu, lo, hi = (to_cfs(g[c], g["sensor_id"], stats) for c in ("media", "q025", "q975"))
+        rows[h] = _interval_metrics(g, y, mu, lo, hi, alpha)
+    return pd.DataFrame(rows).T.rename_axis("h")
+
+
+def forecast_conformal_factors(targets, out, alpha=0.05) -> pd.Series:
+    """Split-conformal factor per horizon, from the targets of 'calibracao' (longer horizons get
+    their own, usually larger, factor)."""
+    d = _join_forecast(targets, out)
+    d = d[(d["split"] == "calibracao") & (d["avaliar"] == 1)].dropna(subset=["media"])
+    if d.empty:
+        raise ValueError("A calibração não tem alvos de forecast com previsão.")
+    factors = {}
+    for h, g in d.groupby("h"):
+        half = np.where(g["y"] >= g["media"], g["q975"] - g["media"], g["media"] - g["q025"])
+        s = np.sort(np.abs(g["y"] - g["media"]) / np.maximum(half, 1e-12))
+        k = int(np.ceil((len(s) + 1) * (1 - alpha))) - 1
+        factors[h] = float(s[min(k, len(s) - 1)])
+    return pd.Series(factors, name="fator").rename_axis("h")
+
+
+def apply_forecast_conformal(out: pd.DataFrame, factors: pd.Series) -> pd.DataFrame:
+    """Stretch each forecast interval by the factor of its horizon."""
+    f = out["h"].map(factors)
+    if f.isna().any():
+        raise ValueError(f"Sem fator conformal para os horizontes {sorted(out.loc[f.isna(), 'h'].unique())}.")
+    out = out.copy()
+    out["q025"] = out["media"] - f * (out["media"] - out["q025"])
+    out["q975"] = out["media"] + f * (out["q975"] - out["media"])
+    return out
+
+
 # ---------------------------------------------------------------- detection
+def add_alerts(out: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    """Add ``alerta`` = 1 when the score is above the threshold from the calibration (empty where
+    there is no score). This is the anomaly the model points out, to compare with ``anomalia``."""
+    alert = (out["escore"] > threshold).astype("Int64")
+    return out.assign(alerta=alert.where(out["escore"].notna()))
+
+
 def threshold_from_calibration(serie, out, quantile=0.99) -> float:
     """Alert threshold = quantile of the scores of visible days in 'calibracao' (never 'teste')."""
     d = _join(serie, out)

@@ -12,11 +12,79 @@ O projeto está em fase de preparação e análise exploratória de dados. Ele j
 - construção de tabelas de observações por estação;
 - resumos de cobertura por local monitorado;
 - visualização de séries temporais;
-- tabela de modelagem compartilhada (`src/model_data.py`) para o trabalho de modelos probabilísticos: rótulos de anomalia a partir dos códigos de qualidade da USGS, splits cronológicos, pontos escondidos para avaliação e normalização sem vazamento.
+- tabela de modelagem compartilhada (`src/model_data.py`) para o trabalho de modelos probabilísticos: rótulos de anomalia a partir dos códigos de qualidade da USGS, splits cronológicos, pontos escondidos para avaliação e normalização sem vazamento;
+- tarefa de forecast comum (`src/forecast.py`): origens e horizontes ajustáveis, entradas cortadas na origem, linhas de base e métricas por horizonte.
 
 Os dados atuais cobrem **2010-01-01 a 2025-12-31** em três estados (California, Montana e Minnesota). A ordem dos notebooks está em [Ordem dos notebooks](#ordem-dos-notebooks), e o passo a passo para baixar os dados e montar a base está em [Do download à base dos modelos](#do-download-à-base-dos-modelos).
 
-Os modelos (GP Student‑t, RGP‑t e Bayesian GPLVM) ainda não estão implementados; eles consomem a tabela descrita em [Tabela de modelagem](#tabela-de-modelagem).
+Os modelos (GP Student‑t, RGP‑t e Bayesian GPLVM) ainda não estão implementados; eles consomem a tabela descrita em [Tabela de modelagem](#tabela-de-modelagem). O objetivo e o que cada modelo precisa entregar estão em [Objetivo e escopo dos modelos](#objetivo-e-escopo-dos-modelos).
+
+## Objetivo e escopo dos modelos
+
+**Objetivo:** modelos de séries temporais que **prevejam** a vazão à frente, sejam **robustos a dados faltantes**, lidem com a **sazonalidade** (ciclo anual) e com **anomalias** e ainda **detectem as anomalias**. Os três modelos (GP Student‑t, RGP‑t e Bayesian GPLVM) perseguem o mesmo objetivo e são avaliados da mesma forma.
+
+**Divisão do trabalho:** a `main` é o guia e a pipeline de dados comum: base (`serie`), entradas de cada modelo, tarefa de forecast, linhas de base e métricas. A implementação de cada modelo fica com quem o assumiu, dentro deste escopo.
+
+| Requisito | Como a pipeline oferece | GP Student‑t | RGP‑t | Bayesian GPLVM |
+|---|---|---|---|---|
+| **Prever (forecast)** | origens e horizontes ajustáveis, entrada cortada na origem, persistência e climatologia como linhas de base ([Forecast](#forecast-origens-e-horizontes)) | condiciona nos visíveis até a origem e extrapola o kernel | lê a sequência **cortada na origem** e simula os estados à frente | **opção b:** dinâmica sobre os códigos latentes da sequência de janelas, projetada a partir da origem |
+| **Reconstruir faltantes com incerteza** | dias escondidos de propósito (`escondido_aval`), sem imputação | prevê nos dias escondidos | idem | reconstrói as células escondidas da janela |
+| **Robusto a faltantes** | máscaras; nenhum NaN nas entradas | usa só os dias visíveis | máscara no ELBO | máscara na verossimilhança |
+| **Sazonalidade** | ciclo anual preservado; seno/cosseno do dia do ano disponíveis | kernel periódico sobre `t` | `add_seasonal_channels` na entrada | `sazonal` de cada janela na dinâmica |
+| **Robusto a anomalias** | dias com problema entram no treino, sem rótulo | verossimilhança Student‑t | Student‑t | Student‑t (ou declarar se não usar) |
+| **Detectar anomalias** | rótulos dos qualificadores, limiar da calibração, métricas no teste | escore 1/E[τ] | escore 1/E[τ] | −ELBO da janela |
+
+**O que cada modelo entrega** (todos no mesmo formato, para a comparação):
+
+1. **Reconstrução e detecção:** uma linha por (estação, dia) com `sensor_id`, `t`, `media`, `q025`, `q975`, `escore` (e `logp`, opcional), mais `alerta` (`add_alerts`, com o limiar da calibração). Veja [Saída dos modelos](#saída-dos-modelos-detecção-de-anomalias).
+2. **Forecast:** uma linha por (estação, origem, horizonte) com `sensor_id`, `origem`, `h`, `media`, `q025`, `q975` (e `logp`, opcional), para as origens e horizontes de `ForecastConfig()` (padrão da comparação).
+3. **Métricas no `teste`, uma única vez:** reconstrução, detecção e forecast por horizonte, ao lado das linhas de base (climatologia e persistência), com os mesmos limiares e fatores conformais vindos da `calibracao`.
+
+**Regras comuns:** parâmetros ajustados só no `treino`; hiperparâmetros escolhidos na `validacao`; limiar de alerta e fatores conformais na `calibracao`; o `teste` só mede. A otimização de hiperparâmetros prevista no relatório técnico é a Bayesiana com BoTorch; quem usar outra ferramenta (por exemplo, Optuna) deve declarar isso na comparação.
+
+O roteiro de cada modelo, passo a passo, está em [Pipeline de cada modelo](#pipeline-de-cada-modelo).
+
+## Pipeline de cada modelo
+
+Antes de começar, os dados precisam existir: `01_download` → `02_serie_modelos` → o notebook de entradas do seu modelo (`04`, `05` ou `06`). Veja [Ordem dos notebooks](#ordem-dos-notebooks). Cada colaborador implementa o seu modelo num notebook próprio (`07_modelo1_gp`, `08_modelo2_rgp` ou `09_modelo3_gplvm`), seguindo os passos abaixo.
+
+**Passo 0, igual para todos: ler a base e a tarefa de forecast.**
+
+```python
+NOME = "serie_2010_2025_200est"
+serie = pd.read_parquet(EXPORT_ROOT / f"{NOME}.parquet")                     # rótulos e alvos da avaliação
+stats = pd.read_csv(EXPORT_ROOT / f"{NOME}_stats.csv", index_col="sensor_id")  # para voltar a ft³/s
+
+FORECAST = ForecastConfig()                  # padrão da comparação: horizons=(1, 7, 30), origin_step=30
+alvos = forecast_targets(serie, FORECAST)    # uma linha por (estação, origem, h)
+origens = forecast_origins(serie, FORECAST)
+```
+
+**Passos 1 a 5: o que muda de um modelo para outro.**
+
+| Passo | 1. GP Student‑t | 2. RGP‑t | 3. Bayesian GPLVM (opção b) |
+|---|---|---|---|
+| **1. Ler a entrada** | `load_inputs(NOME, "modelo1_gp")` → `gp_arrays(entradas, sid)` (local) ou `gp_global_arrays(entradas)` (global) | `load_inputs(NOME, "modelo2_rgp")` → `rgp_arrays(entradas)` → `add_seasonal_channels(rgp, serie)` | `load_inputs(NOME, "modelo3_gplvm")` → `gplvm_arrays` (janelas) e `load_inputs(NOME, "modelo3_gplvm_dinamica")` → `gplvm_sequence_arrays` (sequência) |
+| **2. Ajustar (só treino)** | GP variacional com verossimilhança Student‑t e kernel periódico × RBF + RBF, em `t_train`/`y_train` | ELBO com verossimilhança Student‑t só nos dias de `fit_mask` | GPLVM com Student‑t nas janelas de `select_split(gl, "treino")`, com a máscara; depois, a dinâmica x_{k+1} = f(x_k, sazonal) nas janelas da sequência com `split == "treino"` |
+| **3. Hiperparâmetros (validação)** | ν, número de pontos de indução, período: pelo NLPD nos escondidos da validação e pelo erro de forecast nas origens da validação | idem, mais o tamanho da RNN | idem, mais a dimensão latente e o tamanho da janela |
+| **4. Reconstruir e pontuar** | prever em todos os dias, condicionando em `t_context`; escore 1/E[τ] | ler a sequência e prever os dias de cada bloco; escore 1/E[τ] | inferir q(X) de cada janela com os parâmetros congelados; escore −ELBO da janela, repetido nos dias (`windows_to_days`) |
+| **5. Forecast em cada origem** | `gp_forecast_inputs` (ou `gp_global_forecast_inputs`) → prever `t_pred` | `rgp_forecast_inputs`: a RNN lê só até a origem e simula os estados à frente | `gplvm_forecast_inputs`: inferir os códigos das janelas já vistas, projetar a dinâmica e decodificar os `alvos` |
+
+**Passos 6 e 7, iguais para todos: calibrar e medir.**
+
+```python
+# 6. Calibração: limiar de alerta e fatores conformais (nunca no teste)
+limiar = threshold_from_calibration(serie, out, quantile=0.99)
+out = apply_conformal(add_alerts(out, limiar), conformal_factor(serie, out))
+prev = apply_forecast_conformal(prev, forecast_conformal_factors(alvos, prev))   # um fator por horizonte
+
+# 7. Teste, uma única vez, ao lado das linhas de base (persistence_forecast, climatology_forecast)
+reconstruction_metrics(serie, out, split="teste")
+detection_metrics(serie, out, limiar, split="teste"); detection_by_group(serie, out, limiar, split="teste")
+forecast_metrics(alvos, prev, split="teste")
+```
+
+`out` é a saída de reconstrução e detecção (uma linha por estação e dia) e `prev` é a saída de forecast (uma linha por estação, origem e horizonte); os formatos estão em [Objetivo e escopo dos modelos](#objetivo-e-escopo-dos-modelos). Salve as duas na pasta do seu modelo, `data/exports/<NOME>/<modelo>/resultados.parquet` e `forecast.parquet`, para que a comparação entre os três modelos leia os arquivos no mesmo lugar. A seção 7 do `03_guia_bases_modelos.ipynb` mostra os passos 0, 5, 6 e 7 em uso com as linhas de base.
 
 ## Estrutura do repositório
 
@@ -40,8 +108,11 @@ usgs_streamflow/
 │   │       ├── modelo2_rgp/
 │   │       │   ├── entradas.parquet               (uma linha por estação e dia; 05)
 │   │       │   └── config.json
-│   │       └── modelo3_gplvm/
-│   │           ├── janelas.parquet                (uma linha por janela; 06)
+│   │       ├── modelo3_gplvm/
+│   │       │   ├── janelas.parquet                (uma linha por janela; 06)
+│   │       │   └── config.json
+│   │       └── modelo3_gplvm_dinamica/
+│   │           ├── sequencia.parquet              (sequência de janelas por estação, para o forecast; 06)
 │   │           └── config.json
 │   └── usgs/
 │       ├── processed/
@@ -136,9 +207,10 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 - `src/catalog.py`: carrega, valida e indexa CSV e Parquet (`load_dataset`, `build_dataset_index`, `export_dataset`). Também guarda os leitores do formato antigo (`stations_full.parquet` e um arquivo por lote em `data/usgs/raw/`), que o fluxo atual não usa;
 - `src/processing.py`: transforma observações em tabela analítica por estação, calcula sumários de cobertura e completa o calendário diário sem imputar valores;
 - `src/model_data.py`: monta a tabela de modelagem (rótulos, splits, seleção de estações, pontos escondidos e normalização);
-- `src/model_inputs.py`: converte a tabela na entrada de cada modelo (`gp_inputs`, `rgp_inputs`, `gplvm_inputs`), sem NaN;
-- `src/model_exports.py`: salva e lê a entrada de cada modelo em Parquet, em `data/exports/<NOME>/<modelo>/` (`gp_table`, `rgp_table`, `gplvm_table`, `save_inputs`, `load_inputs`), e a converte de volta nos arrays (`gp_arrays`, `rgp_arrays`, `gplvm_arrays`, que devolvem o mesmo que as funções de `src/model_inputs.py`). `gp_global_arrays` monta a entrada do GP com várias estações juntas (`X = [t, índice da estação]`), para um GP global;
-- `src/evaluation.py`: confere o formato da saída dos modelos e calcula as métricas de reconstrução, conformal e detecção de anomalias;
+- `src/model_inputs.py`: converte a tabela na entrada de cada modelo (`gp_inputs`, `rgp_inputs`, `gplvm_inputs`), sem NaN. Também monta a sazonalidade (`seasonal_features`, `add_seasonal_channels` para o RGP‑t) e a sequência completa de janelas do GPLVM para o forecast (`gplvm_sequence`, opção b);
+- `src/model_exports.py`: salva e lê a entrada de cada modelo em Parquet, em `data/exports/<NOME>/<modelo>/` (`gp_table`, `rgp_table`, `gplvm_table`, `save_inputs`, `load_inputs`), e a converte de volta nos arrays (`gp_arrays`, `rgp_arrays`, `gplvm_arrays`, que devolvem o mesmo que as funções de `src/model_inputs.py`). `gp_global_arrays` monta a entrada do GP com várias estações juntas (`X = [t, índice da estação]`), para um GP global; `gplvm_sequence_table`/`gplvm_sequence_arrays` salvam e leem a sequência de janelas do GPLVM;
+- `src/forecast.py`: tarefa de forecast comum: `ForecastConfig` (horizontes e espaçamento das origens, ajustáveis), `forecast_origins`, `forecast_targets`, entradas cortadas na origem (`gp_forecast_inputs`, `gp_global_forecast_inputs`, `rgp_forecast_inputs`, `gplvm_forecast_inputs`) e linhas de base (`persistence_forecast`, `climatology_forecast`);
+- `src/evaluation.py`: confere o formato da saída dos modelos e calcula as métricas de reconstrução, conformal e detecção de anomalias (`add_alerts` gera a coluna `alerta`), e as de forecast por horizonte (`forecast_metrics`, `forecast_conformal_factors`, `apply_forecast_conformal`);
 - `src/plots.py`: gera gráficos de série temporal por estação;
 - `src/main.py`: a partir dos arquivos gerados pelo download, monta a tabela de observações (`build_observation_table`), o resumo por estação (`build_analysis_dataset`) e a tabela de modelagem (`build_model_dataset`). Por padrão, usa o período, o parâmetro e a estatística de `src/config.py` (`.env`); para outros valores, passe `config=DownloadConfig(...)`.
 
@@ -155,9 +227,9 @@ Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias 
 |---|---|---|---|---|
 | 1 | `01_download.ipynb` | API da USGS (chave no `.env`) | um Parquet por série em `data/usgs/raw/parquets/` e a lista `..._selected.csv` | uma vez, ou ao mudar período ou estados; se cair, rode de novo e ele continua |
 | 2 | `02_serie_modelos.ipynb` | arquivos do `01` | `serie`, `stats` e `config` em `data/exports/` | uma vez por configuração da base; ao mudar `SelectionConfig` ou `SplitConfig`, troque `NOME` |
-| 3 | `03_guia_bases_modelos.ipynb` | `serie` salva pelo `02` | nada (guia) | para consultar como montar entradas, saídas e métricas |
+| 3 | `03_guia_bases_modelos.ipynb` | `serie` salva pelo `02` | nada (guia) | para consultar como montar entradas, saídas, métricas e a tarefa de forecast (seção 7) |
 | 4–6 | `04_entradas_modelo1_gp.ipynb`, `05_entradas_modelo2_rgp.ipynb`, `06_entradas_modelo3_gplvm.ipynb` | `serie` salva pelo `02` | entrada de cada modelo em `data/exports/<NOME>/<modelo>/` (Parquet + `config.json`) | uma vez por base, depois do `02`; independentes entre si |
-| 7–9 | notebooks dos modelos (futuros) | entrada salva pelo `04`, `05` ou `06` | previsões, escores e métricas | ao ajustar cada modelo |
+| 7–9 | notebooks dos modelos (futuros) | entrada salva pelo `04`, `05` ou `06` | reconstrução, escores e alertas, forecast por horizonte e métricas | ao ajustar cada modelo |
 
 Os notebooks `04`–`06` **só preparam os dados**: não ajustam nenhum modelo. O ajuste, a previsão e as métricas ficam nos notebooks dos modelos (`07`–`09`), que só leem a entrada salva.
 
@@ -322,8 +394,9 @@ Cada um monta a entrada do seu modelo a partir da mesma `serie`, com as 200 esta
 | 1. GP Student‑t | `04_entradas_modelo1_gp.ipynb` | `gp_inputs(serie, sensor_id)` | pares (dia, vazão) de uma estação, sem NaN | `modelo1_gp/entradas.parquet`: uma linha por (estação, dia), com `ajuste`, `visivel` e `escondido_aval` |
 | 2. RGP‑t | `05_entradas_modelo2_rgp.ipynb` | `rgp_inputs(serie)` | todas as estações como sequências completas `(S, T)`, com 0 nos dias sem valor e uma máscara | `modelo2_rgp/entradas.parquet`: uma linha por (estação, dia), com `y_entrada`, `visivel`, `escondido_aval` e `y_true` |
 | 3. Bayesian GPLVM | `06_entradas_modelo3_gplvm.ipynb` | `gplvm_inputs(serie, window=7)` | janelas de 7 dias de cada estação, montadas dentro de cada bloco, também com máscara | `modelo3_gplvm/janelas.parquet`: uma linha por janela, com `t_k`, `y_k`, `mask_k`, `true_k` e `hidden_k` |
+| 3. GPLVM, forecast (opção b) | `06_entradas_modelo3_gplvm.ipynb` | `gplvm_sequence(serie, window=7)` | sequência completa de janelas de cada estação, em ordem, numa grade de calendário comum (para a dinâmica latente) | `modelo3_gplvm_dinamica/sequencia.parquet`: uma linha por (estação, janela), com `janela`, `t_inicio`, `split` e as células |
 
-Os arquivos ficam em `data/exports/<NOME>/`, ao lado de um `config.json` com as escolhas usadas (estações, estação local do GP, janela do GPLVM). Os rótulos de anomalia não vão para esses arquivos: ficam na `serie`, que é o que a avaliação lê. Os três notebooks são independentes entre si.
+Os arquivos ficam em `data/exports/<NOME>/`, ao lado de um `config.json` com as escolhas usadas (estações, estação local do GP, janela do GPLVM). Os rótulos de anomalia não vão para esses arquivos: ficam na `serie`, que é o que a avaliação lê. Os três notebooks são independentes entre si. Cada um também mostra a entrada do forecast numa origem de exemplo; o do RGP‑t mostra a sazonalidade na entrada (`add_seasonal_channels`), calculada a partir das datas, sem arquivo próprio.
 
 O `03_guia_bases_modelos.ipynb` mostra as três funções em uso, o formato da saída e as métricas. Os detalhes de cada uma estão em [Como cada modelo lê a tabela](#como-cada-modelo-lê-a-tabela).
 
@@ -332,7 +405,8 @@ O `03_guia_bases_modelos.ipynb` mostra as três funções em uso, o formato da s
 Os notebooks dos modelos não montam nada: leem a entrada salva e a convertem nos arrays. As funções `gp_arrays`, `rgp_arrays` e `gplvm_arrays` devolvem exatamente o mesmo que `gp_inputs`, `rgp_inputs` e `gplvm_inputs`:
 
 ```python
-from src.model_exports import load_inputs, gp_arrays, gp_global_arrays, rgp_arrays, gplvm_arrays
+from src.model_exports import (load_inputs, gp_arrays, gp_global_arrays, rgp_arrays, gplvm_arrays,
+                               gplvm_sequence_arrays)
 
 # Modelo 1, local: uma estação por vez
 entradas, cfg = load_inputs("serie_2010_2025_200est", "modelo1_gp")
@@ -349,6 +423,25 @@ rgp = rgp_arrays(entradas)                                # rgp["rnn_in"]: (S, T
 # Modelo 3: janelas
 entradas, cfg = load_inputs("serie_2010_2025_200est", "modelo3_gplvm")
 gl = gplvm_arrays(entradas)                               # select_split(gl, "treino"), ...
+
+# Modelo 3, forecast (opção b): sequência de janelas
+sequencia, cfg = load_inputs("serie_2010_2025_200est", "modelo3_gplvm_dinamica")
+seq = gplvm_sequence_arrays(sequencia)                   # Y, mask: (S, K, janela); split, sazonal: por janela
+```
+
+**Forecast:** em cada origem, use só a entrada cortada na origem (o RGP‑t, por exemplo, tem a sequência inteira em `rnn_in`, inclusive o futuro):
+
+```python
+from src.forecast import (ForecastConfig, forecast_origins, forecast_targets, gp_forecast_inputs,
+                          rgp_forecast_inputs, gplvm_forecast_inputs)
+from src.model_inputs import add_seasonal_channels
+
+FORECAST = ForecastConfig()                               # padrão: horizons=(1, 7, 30), origin_step=30
+alvos = forecast_targets(serie, FORECAST)                 # uma linha por (estação, origem, h); y só para as métricas
+for origem in forecast_origins(serie, FORECAST)["origem"]:
+    gp_f = gp_forecast_inputs(entradas_gp, sid, origem, FORECAST.horizons)     # Modelo 1
+    rgp_f = rgp_forecast_inputs(add_seasonal_channels(rgp, serie), origem, FORECAST.horizons)   # Modelo 2
+    gl_f = gplvm_forecast_inputs(seq, origem, FORECAST.horizons)               # Modelo 3
 ```
 
 Para usar menos estações, filtre `entradas` antes de converter (por exemplo, `entradas[entradas["sensor_id"].isin(lista)]`). A avaliação continua usando a `serie` e as funções de `src/evaluation.py`.
@@ -365,6 +458,7 @@ Para usar menos estações, filtre `entradas` antes de converter (por exemplo, `
 | Qual base cada entrada usa | `NOME`, no início dos notebooks `04`–`06` |
 | Estação do caso local | `ESTACAO`, no `04_entradas_modelo1_gp.ipynb` |
 | Tamanho da janela e fração máxima sem valor do GPLVM | `JANELA` e `MAX_FALTANTE`, no `06_entradas_modelo3_gplvm.ipynb` |
+| Horizontes do forecast e espaçamento das origens | `ForecastConfig(horizons=..., origin_step=...)`, onde o forecast é feito (padrão da comparação: `(1, 7, 30)` e `30`) |
 | Gerar de novo uma entrada com outras escolhas | apagar a pasta `data/exports/<NOME>/<modelo>/` e rodar o notebook de novo |
 | Códigos que viram anomalia | `PROBLEM_QUALIFIERS`, em `src/model_data.py` (depois, gere a base de novo com outro `NOME`) |
 | Chave da API | `.env` |
@@ -594,18 +688,33 @@ Os três modelos entregam a mesma tabela, uma linha por (estação, dia):
 
 - `media`, `q025`, `q975`: previsão e intervalo de 95% na escala de `y` (use `stats` para voltar a ft³/s).
 - `escore`: quanto maior, mais anômalo. Modelos 1 e 2: 1/E[τ] (nos dias de validação e teste, a mesma fórmula aplicada à previsão do modelo). Modelo 3: −ELBO da janela, repetido em cada dia dela. É NaN nos dias sem valor visível.
-- `alerta`: 1 se o escore passa de um limiar definido na `calibracao` (ex.: percentil 99, ou via conformal), nunca no teste.
+- `alerta`: 1 se o escore passa de um limiar definido na `calibracao` (ex.: percentil 99, ou via conformal), nunca no teste. É a anomalia apontada pelo modelo: `add_alerts(out, limiar)`, com o limiar de `threshold_from_calibration`.
 
-### Duas avaliações separadas
+### Três avaliações separadas
 
 | Avaliação | Pergunta | Colunas | Métricas |
 |---|---|---|---|
 | Reconstrução | o modelo acerta o valor quando o dado falta? | `escondido_aval` (só dias normais) e `y_bruto` | RMSE, NLPD, cobertura do intervalo de 95% |
 | Detecção | o modelo aponta os dias com problema? | `escore`/`alerta` contra `anomalia` | AUC, recall e precisão, só no `teste` |
+| Forecast | o modelo prevê os próximos dias só com o passado? | alvos de `forecast_targets` (`avaliar = 1`) | RMSE, MAE, cobertura e interval score **por horizonte**, só no `teste` |
 
 A máscara não ajuda nem atrapalha a detecção: os dias escondidos são sorteados só entre dias sem código de problema.
 
 **Dados provisórios:** os anos mais recentes (bloco de teste) ainda não foram revisados pela USGS e podem ter erros sem rótulo. Mostrem as métricas finais separando dados `Approved` e `Provisional`.
+
+### Forecast: origens e horizontes
+
+- **Origem:** o "hoje" fictício. O modelo só lê os dias visíveis (`visivel = 1`) até a origem, inclusive.
+- **Horizonte `h`:** quantos dias depois da origem fica o dia previsto (`t = origem + h`).
+- **Origens:** a cada `origin_step` dias dentro de cada bloco; a primeira é o último dia antes do bloco, e os alvos nunca saem do bloco. Com o padrão, são 30 origens na validação, 20 na calibração e 30 no teste, por estação.
+- **Papel dos blocos:** `validacao` escolhe hiperparâmetros pelo erro de forecast; `calibracao` dá o fator conformal **por horizonte** (`forecast_conformal_factors`); `teste` mede uma vez.
+- **Alvos avaliados:** dias com valor e sem anomalia (`avaliar = 1`), como na reconstrução.
+
+**Horizontes ajustáveis.** `ForecastConfig(horizons=(1, 7, 30), origin_step=30)` é o padrão da comparação entre os modelos. Qualquer outro conjunto funciona como análise adicional, por exemplo `horizons=tuple(range(1, 31))` (curva de erro dia a dia), `horizons=(1, 7, 30, 90)` ou `origin_step=7` (mais origens). Tudo é determinístico: a mesma `serie` e a mesma configuração dão as mesmas origens e alvos para todos os modelos, sem arquivo a salvar. Horizontes longos têm menos alvos (a calibração tem 584 dias); confira `forecast_summary`.
+
+**Linhas de base:** persistência (último valor visível até a origem) e climatologia (média do mesmo dia do ano no treino). Com os dados atuais, no teste, a persistência tem RMSE de 0,29 (h = 1), 0,57 (h = 7) e 0,94 (h = 30) na escala de `y`; a climatologia fica perto de 1,08 em todos os horizontes. Um modelo precisa superar as duas.
+
+**Saída do forecast:** uma linha por (estação, origem, horizonte) com `sensor_id`, `origem`, `h`, `media`, `q025`, `q975` (e `logp`, opcional); confira com `check_forecast_output`. A seção 7 do `03_guia_bases_modelos.ipynb` mostra tudo em uso.
 
 ### Anomalias fora do treino
 
@@ -678,7 +787,9 @@ A API OGC devolve os qualificadores por extenso e em maiúsculas, juntados por `
 | Otimização tocando o teste | hiperparâmetros ou limiares escolhidos olhando o teste | otimização Bayesiana só em `validacao`, conformal só em `calibracao`, teste usado uma vez |
 | Ponto escondido usado na própria previsão | o valor verdadeiro entra no ajuste | `visivel = 0` nos escondidos; os modelos só recebem `visivel = 1` |
 | Imputação fácil demais | dia isolado escondido tem vizinhos observados dos dois lados | reportar também `hidden_block_len > 1` (ex.: 7 dias) para simular lacunas reais |
-| Janelas atravessando splits (GPLVM) | uma janela mistura dias de treino e teste | montar janelas dentro de cada split |
+| Janelas atravessando splits (GPLVM) | uma janela mistura dias de treino e teste | `gplvm_inputs` monta as janelas dentro de cada split; na sequência do forecast (`gplvm_sequence`), essas janelas têm `split = 'misto'` e ficam fora do ajuste da dinâmica |
+| Futuro na entrada do forecast | o modelo lê dias depois da origem (por exemplo, `rnn_in` inteiro no RGP‑t, ou uma RNN bidirecional) | usar só as entradas cortadas na origem (`gp_forecast_inputs`, `rgp_forecast_inputs`, `gplvm_forecast_inputs`) |
+| Um único intervalo para todos os horizontes | o erro cresce com o horizonte; um fator conformal único deixa h = 30 com cobertura baixa | fator conformal por horizonte, calculado na `calibracao` |
 | Dados provisórios no teste | os últimos anos costumam ser `Provisional`, com erros ainda não revisados nem rotulados | conferir `split_summary` e reportar o desempenho separando `Approved` e `Provisional` |
 | Rótulos incompletos | há dias problemáticos sem código; cheias reais não têm código | tratar a precisão como limite inferior; inspecionar os maiores escores fora dos dias rotulados |
 | Código `ESTIMATED` | o valor já foi corrigido pela USGS, a anomalia pode ter sido apagada | não entra em `anomalia`; analisar à parte se necessário |

@@ -6,6 +6,7 @@ Layout (``base`` is the NOME of the table saved by 02_serie_modelos.ipynb):
     data/exports/<base>/modelo1_gp/entradas.parquet  one row per (station, day)
     data/exports/<base>/modelo2_rgp/entradas.parquet one row per (station, day)
     data/exports/<base>/modelo3_gplvm/janelas.parquet one row per window
+    data/exports/<base>/modelo3_gplvm_dinamica/sequencia.parquet one row per (station, window), in order
     data/exports/<base>/<modelo>/config.json         choices used to build the table
 
 Every table keeps ``sensor_id`` and ``t``, so the arrays can be rebuilt and the model output
@@ -22,12 +23,13 @@ import numpy as np
 import pandas as pd
 
 from .config import EXPORT_ROOT
-from .model_inputs import gp_inputs, gplvm_inputs, rgp_inputs
+from .model_inputs import gp_inputs, gplvm_inputs, gplvm_sequence, rgp_inputs, seasonal_features
 
 FILES = {
     "modelo1_gp": "entradas.parquet",
     "modelo2_rgp": "entradas.parquet",
     "modelo3_gplvm": "janelas.parquet",
+    "modelo3_gplvm_dinamica": "sequencia.parquet",
 }
 GPLVM_FIELDS = (("t", "t_idx"), ("y", "Y"), ("mask", "mask"), ("true", "Y_true"), ("hidden", "hidden"))
 
@@ -161,3 +163,44 @@ def gplvm_arrays(table: pd.DataFrame) -> dict:
         arrays[key] = arrays[key].astype(float)
     arrays["meta"] = table[["sensor_id", "split"]].reset_index(drop=True)
     return arrays
+
+
+# ---------------------------------------------------------------- Modelo 3, opção b: sequência de janelas
+
+def gplvm_sequence_table(serie: pd.DataFrame, window: int = 7) -> pd.DataFrame:
+    """One row per (station, window) of the complete window sequence (gplvm_sequence):
+    sensor_id, janela (order), t_inicio, t_fim, data_inicio, split and the cells t_k, y_k, mask_k,
+    true_k, hidden_k, as in gplvm_table."""
+    seq = gplvm_sequence(serie, window=window)
+    S, K, W = seq["Y"].shape
+    dates = serie.drop_duplicates("t").set_index("t")["data"]
+    out = pd.DataFrame({
+        "sensor_id": np.repeat(seq["sensors"], K), "janela": np.tile(np.arange(K), S),
+        "t_inicio": np.tile(seq["t_inicio"], S), "t_fim": np.tile(seq["t_fim"], S),
+        "data_inicio": np.tile(dates.loc[seq["t_inicio"]].to_numpy(), S),
+        "split": np.tile(seq["split"], S),
+    })
+    for prefix, key in GPLVM_FIELDS:
+        flat = seq[key].reshape(S * K, W)
+        for k in range(W):
+            out[f"{prefix}_{k}"] = flat[:, k]
+    return out
+
+
+def gplvm_sequence_arrays(table: pd.DataFrame) -> dict:
+    """Same keys as gplvm_sequence: arrays (S, K, window) and window metadata (K,)."""
+    table = table.sort_values(["sensor_id", "janela"])
+    sensors = table["sensor_id"].drop_duplicates().to_list()
+    S = len(sensors)
+    K = len(table) // S
+    window = sum(c.startswith("y_") and c[2:].isdigit() for c in table.columns)
+    first = table[table["sensor_id"] == sensors[0]]
+    out = {"sensors": sensors}
+    for prefix, key in GPLVM_FIELDS:
+        arr = table[[f"{prefix}_{k}" for k in range(window)]].to_numpy().reshape(S, K, window)
+        out[key] = arr.astype(int) if key == "t_idx" else arr.astype(float)
+    out["t_inicio"] = first["t_inicio"].to_numpy(int)
+    out["t_fim"] = first["t_fim"].to_numpy(int)
+    out["split"] = first["split"].to_numpy()
+    out["sazonal"] = seasonal_features(first["data_inicio"].to_numpy())
+    return out

@@ -104,6 +104,63 @@ def gplvm_inputs(serie: pd.DataFrame, window: int = 7, max_missing: float = 0.5)
     }
 
 
+def seasonal_features(dates) -> np.ndarray:
+    """(n, 2) = [sin, cos] of the day of the year: the annual cycle as an input. Calendar
+    values are known in advance, so they can also be given for future days."""
+    doy = pd.DatetimeIndex(pd.to_datetime(np.asarray(dates))).dayofyear.to_numpy(float)
+    angle = 2 * np.pi * doy / 365.25
+    return np.column_stack([np.sin(angle), np.cos(angle)])
+
+
+def add_seasonal_channels(rgp: dict, serie: pd.DataFrame) -> dict:
+    """Model 2 (optional): append [sin, cos] of the day of the year to the RNN input,
+    rnn_in (S, T, 2) -> (S, T, 4). ``sazonal`` (T, 2) keeps the features of each day."""
+    dates = serie.drop_duplicates("t").set_index("t").sort_index()["data"]
+    seas = seasonal_features(dates.to_numpy())
+    if len(seas) != rgp["y"].shape[1]:
+        raise ValueError("O calendário da serie não bate com o número de dias da entrada do RGP.")
+    S = rgp["y"].shape[0]
+    rnn_in = np.concatenate([rgp["rnn_in"], np.broadcast_to(seas, (S, *seas.shape))], axis=-1)
+    return {**rgp, "rnn_in": rnn_in, "sazonal": seas}
+
+
+def gplvm_sequence(serie: pd.DataFrame, window: int = 7) -> dict:
+    """Model 3, option b (latent dynamics): consecutive windows of every station, in order.
+
+    Unlike gplvm_inputs, windows follow one calendar grid shared by all stations and are never
+    dropped, so the sequence of windows is complete and a dynamics model can be fitted on it.
+    The grid ends on the last day; the first ``T % window`` days are left out.
+
+    - Y, mask, Y_true, hidden, t_idx: (S, K, window), as in gplvm_inputs (Y = 0 where not visible).
+    - t_inicio, t_fim: (K,) first and last day of each window; split: (K,) block of the window,
+      ``misto`` when it crosses two blocks (fit the dynamics on windows with split == 'treino').
+    - sazonal: (K, 2) [sin, cos] of the day of the year at the start of each window.
+    """
+    s = serie.sort_values(["sensor_id", "t"])
+    T = int(s["t"].max()) + 1
+    offset = T % window
+    K = (T - offset) // window
+    s = s[s["t"] >= offset]
+    sensors = s["sensor_id"].drop_duplicates().to_list()
+    shape = (len(sensors), K, window)
+    if len(s) != shape[0] * K * window:
+        raise ValueError("A serie precisa ter o calendário completo em todas as estações.")
+    vis = s["visivel"].to_numpy(int).reshape(shape)
+    true = s["y"].to_numpy(float).reshape(shape)
+    days = s.drop_duplicates("t")
+    t_grid = days["t"].to_numpy(int).reshape(K, window)
+    split = days["split"].to_numpy().reshape(K, window)
+    return {
+        "sensors": sensors,
+        "Y": np.where(vis == 1, true, 0.0), "mask": vis.astype(float), "Y_true": true,
+        "hidden": s["escondido_aval"].to_numpy(float).reshape(shape),
+        "t_idx": np.broadcast_to(t_grid, shape).copy(),
+        "t_inicio": t_grid[:, 0], "t_fim": t_grid[:, -1],
+        "split": np.where((split == split[:, :1]).all(axis=1), split[:, 0], "misto"),
+        "sazonal": seasonal_features(days["data"].to_numpy().reshape(K, window)[:, 0]),
+    }
+
+
 def select_split(inputs: dict, split: str) -> dict:
     """GPLVM windows of one block: treino (fit), validacao/calibracao/teste (score)."""
     keep = inputs["meta"]["split"].eq(split).to_numpy()
