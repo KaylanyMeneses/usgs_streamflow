@@ -95,8 +95,7 @@ usgs_streamflow/
 ├── README.md
 ├── requirements.txt
 ├── data/
-│   ├── intermediate/
-│   ├── raw/
+│   ├── analysis.parquet
 │   ├── exports/
 │   │   ├── serie_2010_2025_200est.parquet         (a serie usada por todos os modelos; 02)
 │   │   ├── serie_2010_2025_200est_stats.csv       (média e desvio por estação; 02)
@@ -115,6 +114,7 @@ usgs_streamflow/
 │   │           ├── sequencia.parquet              (sequência de janelas por estação, para o forecast; 06)
 │   │           └── config.json
 │   └── usgs/
+│       ├── interim/                                        (reservado para intermediários)
 │       ├── processed/
 │       │   ├── catalog_stations.csv
 │       │   ├── continuous_series_catalog.csv
@@ -142,20 +142,26 @@ usgs_streamflow/
 │   ├── análise_seleção.ipynb              (exploração, fora da sequência)
 │   └── usgs_streamflow.ipynb              (exploração da API, fora da sequência)
 ├── references/
+│   ├── Referencias.md                                      (resumo: cada referência, para quê, se temos)
 │   ├── Consideracoes_anomalias.md
 │   ├── Formato dos dados caso univariado e multivariado.md
-│   └── Relatório técnico GPs para séries com faltantes e anomalias.md
-├── reports/
-│   └── figures/
+│   ├── Relatório técnico GPs para séries com faltantes e anomalias.md
+│   ├── Gerais/                                             (PDFs: GP, pontos de indução, SVI, GPyTorch)
+│   ├── Avaliacao/                                          (PDFs: interval score, conformal)
+│   ├── Modelo 1, GP Student‑t/                             (PDFs)
+│   ├── Modelo 2, RGP‑t/                                    (PDFs)
+│   └── Modelo 3, Bayesian GPLVM/                           (PDFs)
 ├── src/
 │   ├── __init__.py
 │   ├── api.py
 │   ├── catalog.py
 │   ├── config.py
 │   ├── download.py
-│   ├── main.py
 │   ├── evaluation.py
+│   ├── forecast.py
+│   ├── main.py
 │   ├── model_data.py
+│   ├── model_exports.py
 │   ├── model_inputs.py
 │   ├── plots.py
 │   └── processing.py
@@ -171,8 +177,8 @@ Os dados locais e procesados ficam em `data/` e incluem:
 - `data/usgs/raw/parquets/`: tudo o que o download gera. O catálogo e os locais Stream ficam em cache; cada série diária fica em `daily_<parâmetro>_<estatística>_<início>_<fim>/<time_series_id>.parquet`, e as séries escolhidas ficam listadas em `..._selected.csv`;
 - `data/usgs/raw/backup/`: arquivos do download antigo (período 2010–2024, um arquivo por lote com hash no nome, como `daily_00060_00003_2010-01-01_2024-12-31_0d85f2e0eb25.parquet`). Não são usados pelo fluxo atual;
 - `data/usgs/processed/`: tabelas e arquivos processados, como `stations_full.parquet`, `catalog_stations.csv` e os pares NLDI;
-- `data/intermediate/`: diretório reservado para intermediários e arquivos de apoio;
-- `reports/figures/`: pasta para figuras produzidas durante a análise.
+- `data/usgs/interim/`: diretório reservado para intermediários e arquivos de apoio (vazio, só com `.gitkeep`);
+- `data/exports/`: a `serie` compartilhada e as entradas de cada modelo (veja [Do download à base dos modelos](#do-download-à-base-dos-modelos)).
 
 ### Notebooks
 
@@ -195,7 +201,8 @@ A pasta `references/` guarda os documentos de planejamento do trabalho de modela
 
 - `Relatório técnico GPs para séries com faltantes e anomalias.md`: descreve o problema (faltantes, sazonalidade, picos anômalos e dependência temporal), os três modelos (GP Student‑t, RGP‑t e Bayesian GPLVM), a divisão do trabalho por pessoa, a implementação prevista com GPyTorch/BoTorch e as ressalvas a declarar;
 - `Formato dos dados caso univariado e multivariado.md`: define o formato da base comum e da saída dos modelos nos casos univariado e multivariado, como cada modelo lê os dados, os rótulos de anomalia a partir dos códigos de qualidade e o que entra no treino e na avaliação;
-- `Consideracoes_anomalias.md`: análise de por que poucas estações têm anomalias rotuladas fora do treino, as opções para contornar isso (mais estações, `candidates`, teste maior) com os riscos de vazamento de cada uma, e onde mudar estados e filtros.
+- `Consideracoes_anomalias.md`: análise de por que poucas estações têm anomalias rotuladas fora do treino, as opções para contornar isso (mais estações, `candidates`, teste maior) com os riscos de vazamento de cada uma, e onde mudar estados e filtros;
+- `Referencias.md`: tabela das referências por tema (base comum, cada modelo, avaliação), com o uso de cada uma e se o PDF está no repositório. Os PDFs ficam nas subpastas `Gerais/`, `Avaliacao/` e uma por modelo.
 
 Os exemplos desses documentos são ilustrativos (por exemplo, séries horárias com `serie.csv`); quando houver diferença, vale o que está descrito neste README e no código (dados diários, `serie.parquet`).
 
@@ -766,7 +773,7 @@ Três formas de avaliar a detecção localmente, que se complementam:
 | Completude mínima no treino | ≥ 95% dos dias com valor | `SelectionConfig.min_completeness` |
 | Fração de zeros no treino (exclui rios intermitentes) | ≤ 5% | `SelectionConfig.max_zero_frac` |
 | Vazão negativa | estação descartada | fixo |
-| Número de estações | 10 (1 = univariado) | `SelectionConfig.n_sensors` |
+| Número de estações | 10 no código (1 = univariado); a `serie` em uso (`serie_2010_2025_200est`) tem 200 | `SelectionConfig.n_sensors` |
 | Restringir a um conjunto de estações (ex.: vizinhas) | desligado | `SelectionConfig.candidates` |
 | Proporção dos splits | 60 / 15 / 10 / 15 | `SplitConfig.fracs` |
 | Pontos escondidos por bloco fora do treino | 10% | `SplitConfig.hidden_frac` |
@@ -825,6 +832,9 @@ O arquivo `requirements.txt` inclui:
 - statsmodels
 - python-dotenv
 - ipykernel
+- torch, gpytorch e botorch (para os notebooks dos modelos, `07`–`09`)
+
+O `torch` do `pip` padrão é a versão para CPU. Para usar GPU, instale antes a versão indicada em https://pytorch.org/get-started/locally/ e depois rode `pip install -r requirements.txt`.
 
 ## Validação e qualidade
 
